@@ -1,0 +1,47 @@
+# FastAPI Framework
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.9.2
+pydantic-settings==2.6.0
+
+# Database - PostgreSQL
+sqlalchemy==2.0.36
+asyncpg==0.30.0
+psycopg2-binary==2.9.10
+alembic==1.14.0
+
+# Database - Redis
+redis==5.2.0
+hiredis==3.0.0
+
+# Search - Elasticsearch
+elasticsearch==8.16.0
+
+# Authentication & Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.17
+bcrypt==4.2.1
+
+# AI/LLM Frameworks
+langchain==0.3.7
+langchain-openai==0.2.8
+langchain-community==0.3.7
+langgraph==0.2.45
+openai==1.54.4
+
+# Utilities
+python-dotenv==1.0.1
+httpx==0.27.2
+
+# Development & Testing
+pytest==8.3.3
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+pytest-mock==3.14.0
+pytest-env==1.1.5
+faker==33.1.0
+factory-boy==3.3.1
+black==24.10.0
+flake8==7.1.1
+mypy==1.13.0
