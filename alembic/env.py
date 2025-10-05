@@ -16,8 +16,8 @@ from src.db.session import Base # SQLAlchemy Base 모델 가져오기
 
 # 도메인 모델들을 import (alembic이 자동으로 테이블을 감지하도록)
 from src.domains.users.models import User
-# TODO: 다른 도메인 모델 추가 시 아래에 import 추가
-# from src.domains.documents.models import Document
+from src.domains.documents.models import Document
+from src.domains.tags.models import Tag, DocumentTag
 # ----------------------------------------------------
 
 # This is the Alembic Config object, which provides
