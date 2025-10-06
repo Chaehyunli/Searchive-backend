@@ -96,3 +96,37 @@ class SessionService:
         """
         result = await self.redis.expire(f"session:{session_id}", self.session_expire_time)
         return result > 0
+
+    async def save_code_session_mapping(self, code: str, session_id: str) -> None:
+        """
+        카카오 인가 코드와 세션 ID 매핑을 저장합니다 (중복 사용 방지).
+
+        Args:
+            code: 카카오 인가 코드
+            session_id: 생성된 세션 ID
+
+        Example:
+            await session_service.save_code_session_mapping(code, session_id)
+        """
+        # 10분 동안 유효 (카카오 코드 유효기간)
+        await self.redis.setex(
+            f"kakao_code:{code}",
+            600,  # 10분
+            session_id
+        )
+
+    async def get_session_by_code(self, code: str) -> Optional[str]:
+        """
+        카카오 인가 코드로 이미 생성된 세션 ID를 조회합니다.
+
+        Args:
+            code: 카카오 인가 코드
+
+        Returns:
+            세션 ID 또는 None (코드가 처음 사용되는 경우)
+
+        Example:
+            session_id = await session_service.get_session_by_code(code)
+        """
+        session_id = await self.redis.get(f"kakao_code:{code}")
+        return session_id.decode() if session_id else None

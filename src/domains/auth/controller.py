@@ -55,40 +55,108 @@ async def kakao_callback(
     Raises:
         HTTPException: 인증 과정 중 오류 발생 시
     """
-    # 1. 카카오 인증 및 사용자 정보 조회
-    user_info = await kakao_service.authenticate(code)
-    kakao_id = user_info.get("kakao_id")
-    nickname = user_info.get("nickname")
+    import logging
+    logger = logging.getLogger(__name__)
 
-    # 2. DB에서 사용자 조회 또는 생성
-    result = await db.execute(select(User).where(User.kakao_id == kakao_id))
-    user = result.scalar_one_or_none()
+    try:
+        logger.info(f"카카오 콜백 시작 - code: {code[:10]}...")
 
-    if not user:
-        # 신규 사용자 생성
-        user = User(
-            kakao_id=kakao_id,
-            nickname=nickname
+        # 0. 코드 중복 사용 방지 - 이미 사용된 코드인지 확인
+        existing_session = await session_service.get_session_by_code(code)
+        if existing_session:
+            logger.info(f"이미 사용된 코드 - 기존 세션 사용: {existing_session[:10]}...")
+            # 이미 사용된 코드라면 기존 세션으로 리디렉션
+            frontend_callback_url = f"{settings.FRONTEND_URL}/auth/kakao/callback"
+            response = RedirectResponse(url=frontend_callback_url)
+            response.set_cookie(
+                key="session_id",
+                value=existing_session,
+                httponly=True,
+                max_age=3600,
+                samesite="lax"
+            )
+            return response
+
+        # 0-1. 코드 처리 중 플래그 설정 (동시 요청 방지)
+        code_lock_key = f"kakao_code_lock:{code}"
+        from src.core.redis import redis_client
+        is_processing = await redis_client.get(code_lock_key)
+
+        if is_processing:
+            logger.warning(f"이미 처리 중인 코드 - 대기 중...")
+            # 이미 처리 중이면 1초 대기 후 세션 확인
+            import asyncio
+            await asyncio.sleep(1)
+            existing_session = await session_service.get_session_by_code(code)
+            if existing_session:
+                logger.info(f"처리 완료된 세션 사용: {existing_session[:10]}...")
+                frontend_callback_url = f"{settings.FRONTEND_URL}/auth/kakao/callback"
+                response = RedirectResponse(url=frontend_callback_url)
+                response.set_cookie(
+                    key="session_id",
+                    value=existing_session,
+                    httponly=True,
+                    max_age=3600,
+                    samesite="lax"
+                )
+                return response
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="로그인 처리 중입니다. 잠시 후 다시 시도해주세요."
+                )
+
+        # 코드 처리 시작 플래그 설정 (30초 유효)
+        await redis_client.setex(code_lock_key, 30, "processing")
+
+        # 1. 카카오 인증 및 사용자 정보 조회
+        logger.info("카카오 API 호출 시작")
+        user_info = await kakao_service.authenticate(code)
+        kakao_id = user_info.get("kakao_id")
+        nickname = user_info.get("nickname")
+        logger.info(f"카카오 인증 성공 - kakao_id: {kakao_id}, nickname: {nickname}")
+
+        # 2. DB에서 사용자 조회 또는 생성
+        result = await db.execute(select(User).where(User.kakao_id == kakao_id))
+        user = result.scalar_one_or_none()
+
+        if not user:
+            logger.info("신규 사용자 생성")
+            # 신규 사용자 생성
+            user = User(
+                kakao_id=kakao_id,
+                nickname=nickname
+            )
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+        else:
+            logger.info(f"기존 사용자 조회 - user_id: {user.user_id}")
+
+        # 3. 세션 생성
+        session_id = await session_service.create_session(user.user_id)
+        logger.info(f"세션 생성 완료 - session_id: {session_id[:10]}...")
+
+        # 4. 코드와 세션 ID 매핑 저장 (10분 동안 유효)
+        await session_service.save_code_session_mapping(code, session_id)
+
+        # 5. 쿠키에 세션 ID 설정 후 프론트엔드 콜백 페이지로 리디렉션
+        frontend_callback_url = f"{settings.FRONTEND_URL}/auth/kakao/callback"
+        response = RedirectResponse(url=frontend_callback_url)
+        response.set_cookie(
+            key="session_id",
+            value=session_id,
+            httponly=True,
+            max_age=3600,  # 1시간
+            samesite="lax"
         )
-        db.add(user)
-        await db.commit()
-        await db.refresh(user)
 
-    # 3. 세션 생성
-    session_id = await session_service.create_session(user.user_id)
+        logger.info(f"콜백 처리 완료 - 리디렉션: {frontend_callback_url}")
+        return response
 
-    # 4. 쿠키에 세션 ID 설정 후 프론트엔드 콜백 페이지로 리디렉션
-    frontend_callback_url = f"{settings.FRONTEND_URL}/auth/kakao/callback"
-    response = RedirectResponse(url=frontend_callback_url)
-    response.set_cookie(
-        key="session_id",
-        value=session_id,
-        httponly=True,
-        max_age=3600,  # 1시간
-        samesite="lax"
-    )
-
-    return response
+    except Exception as e:
+        logger.error(f"카카오 콜백 처리 중 에러 발생: {str(e)}", exc_info=True)
+        raise
 
 
 @router.get(
@@ -168,14 +236,22 @@ async def logout(request: Request):
     Returns:
         LogoutResponse: 로그아웃 성공 메시지
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     session_id = request.cookies.get("session_id")
+    logger.info(f"로그아웃 요청 - session_id: {session_id}")
 
     if session_id:
-        await session_service.delete_session(session_id)
+        deleted = await session_service.delete_session(session_id)
+        logger.info(f"세션 삭제 결과: {deleted} (session_id: {session_id[:10] if session_id else 'None'}...)")
+    else:
+        logger.warning("세션 ID가 없는 로그아웃 요청")
 
     response = JSONResponse(
         content={"message": "로그아웃 성공"}
     )
     response.delete_cookie("session_id")
 
+    logger.info("로그아웃 완료")
     return response

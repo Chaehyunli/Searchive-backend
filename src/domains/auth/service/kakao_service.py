@@ -31,6 +31,10 @@ class KakaoOAuthService:
         Raises:
             HTTPException: 토큰 발급 실패 시
         """
+        import logging
+        import asyncio
+        logger = logging.getLogger(__name__)
+
         token_data = {
             "grant_type": "authorization_code",
             "client_id": self.client_id,
@@ -42,25 +46,56 @@ class KakaoOAuthService:
         if self.client_secret:
             token_data["client_secret"] = self.client_secret
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(self.TOKEN_URL, data=token_data)
 
-            if response.status_code != 200:
+            if response.status_code == 200:
+                token_response = response.json()
+                access_token = token_response.get("access_token")
+
+                if not access_token:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="액세스 토큰이 응답에 포함되지 않았습니다"
+                    )
+
+                return access_token
+
+            # 에러 응답 처리
+            try:
+                response_data = response.json()
+                error_code = response_data.get("error_code")
+                error_description = response_data.get("error_description", "")
+
+                # Rate limit 에러인 경우 사용자에게 명확한 메시지 제공
+                if error_code == "KOE237":
+                    logger.error("카카오 API Rate Limit 초과")
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="카카오 로그인 요청이 너무 많습니다. 잠시 후 다시 시도해주세요. (1-2분 대기)"
+                    )
+
+                # 인가 코드 관련 에러
+                if error_code in ["KOE320", "KOE321"]:
+                    logger.error(f"카카오 인가 코드 에러: {error_code} - {error_description}")
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="카카오 로그인 세션이 만료되었습니다. 다시 로그인해주세요."
+                    )
+
+                # 그 외 에러
+                logger.error(f"카카오 API 에러: {response.text}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"액세스 토큰 발급 실패: {response.text}"
+                    detail=f"카카오 인증 실패: {error_description}"
                 )
 
-            token_response = response.json()
-            access_token = token_response.get("access_token")
-
-            if not access_token:
+            except ValueError:
+                # JSON 파싱 실패
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="액세스 토큰이 응답에 포함되지 않았습니다"
+                    detail=f"카카오 API 응답 형식 오류: {response.text}"
                 )
-
-            return access_token
 
     async def get_user_info(self, access_token: str) -> Dict:
         """
