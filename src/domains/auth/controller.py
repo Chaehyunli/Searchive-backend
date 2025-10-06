@@ -77,9 +77,9 @@ async def kakao_callback(
     # 3. 세션 생성
     session_id = await session_service.create_session(user.user_id)
 
-    # 4. 쿠키에 세션 ID 설정 후 리디렉션
-    # TODO: 프론트엔드 URL로 변경 필요
-    response = RedirectResponse(url="/")
+    # 4. 쿠키에 세션 ID 설정 후 프론트엔드 콜백 페이지로 리디렉션
+    frontend_callback_url = f"{settings.FRONTEND_URL}/auth/kakao/callback"
+    response = RedirectResponse(url=frontend_callback_url)
     response.set_cookie(
         key="session_id",
         value=session_id,

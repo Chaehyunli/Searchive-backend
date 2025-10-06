@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     KAKAO_CLIENT_SECRET: str = ""
     KAKAO_REDIRECT_URI: str
 
+    # 프론트엔드 URL
+    FRONTEND_URL: str = "http://localhost:3000"
+
     @property
     def DATABASE_URL(self) -> str:
         """PostgreSQL 데이터베이스 URL 생성"""
