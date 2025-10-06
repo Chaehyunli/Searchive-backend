@@ -13,7 +13,6 @@ class User(Base):
     user_id = Column(BigInteger, primary_key=True, autoincrement=True)  # 사용자 고유 ID
     kakao_id = Column(String(255), unique=True, nullable=False, index=True)  # 카카오 소셜 ID
     nickname = Column(String(255))  # 사용자 닉네임
-    email = Column(String(255))  # 사용자 이메일
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())  # 가입 일시
 
     # 관계 설정

@@ -3,71 +3,76 @@ from typing import List
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables"""
+    """환경 변수에서 로드되는 애플리케이션 설정"""
 
-    # Database Configuration
+    # 데이터베이스 설정
     DB_HOST: str
     DB_PORT: int
     DB_USER: str
     DB_PASSWORD: str
     DB_NAME: str
 
-    # Redis Configuration
+    # Redis 설정
     REDIS_HOST: str
     REDIS_PORT: int
     REDIS_PASSWORD: str = ""
 
-    # Elasticsearch Configuration
+    # Elasticsearch 설정
     ELASTICSEARCH_HOST: str
     ELASTICSEARCH_PORT: int
     ELASTICSEARCH_USER: str = "elastic"
     ELASTICSEARCH_PASSWORD: str
 
-    # Application Configuration
+    # 애플리케이션 설정
     APP_ENV: str = "development"
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
     DEBUG: bool = True
 
-    # Security
+    # 보안 설정
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
-    # AI/LLM Configuration
+    # AI/LLM 설정
     OPENAI_API_KEY: str = ""
     LANGCHAIN_API_KEY: str = ""
     LANGCHAIN_TRACING_V2: bool = False
     LANGCHAIN_PROJECT: str = "searchive"
 
-    # CORS
+    # CORS 설정
     ALLOWED_ORIGINS: str = "http://localhost:3000"
+
+    # 카카오 OAuth 설정
+    KAKAO_CLIENT_ID: str
+    KAKAO_CLIENT_SECRET: str = ""
+    KAKAO_REDIRECT_URI: str
 
     @property
     def DATABASE_URL(self) -> str:
-        """Construct PostgreSQL database URL"""
+        """PostgreSQL 데이터베이스 URL 생성"""
         return f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
     @property
     def ASYNC_DATABASE_URL(self) -> str:
-        """Construct async PostgreSQL database URL"""
+        """비동기 PostgreSQL 데이터베이스 URL 생성"""
         return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
     @property
     def REDIS_URL(self) -> str:
-        """Construct Redis URL"""
+        """Redis URL 생성"""
         if self.REDIS_PASSWORD:
             return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}"
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}"
 
     @property
     def ELASTICSEARCH_URL(self) -> str:
-        """Construct Elasticsearch URL"""
+        """Elasticsearch URL 생성"""
         return f"http://{self.ELASTICSEARCH_HOST}:{self.ELASTICSEARCH_PORT}"
 
     @property
     def CORS_ORIGINS(self) -> List[str]:
-        """Parse CORS origins from comma-separated string"""
+        """쉼표로 구분된 문자열에서 CORS origin 목록 파싱"""
         return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",")]
 
     class Config:
@@ -75,5 +80,5 @@ class Settings(BaseSettings):
         case_sensitive = True
 
 
-# Global settings instance
+# 전역 설정 인스턴스
 settings = Settings()
