@@ -3,10 +3,10 @@
 from fastapi import APIRouter, Request, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
 from src.db.session import get_db
-from src.domains.users.models import User
+from src.domains.users.repository import UserRepository
+from src.domains.users.service import UserService
 from src.domains.auth.service.kakao_service import KakaoOAuthService
 from src.domains.auth.service.session_service import SessionService
 from src.domains.auth.schema.response import LoginResponse, LogoutResponse, SessionResponse
@@ -21,10 +21,16 @@ kakao_service = KakaoOAuthService()
 session_service = SessionService()
 
 
+def get_user_service(db: AsyncSession = Depends(get_db)) -> UserService:
+    """UserService 의존성 주입"""
+    user_repository = UserRepository(db)
+    return UserService(user_repository)
+
+
 @router.post("/test/login", summary="[개발 전용] 테스트 로그인")
 async def test_login(
     kakao_id: str,
-    db: AsyncSession = Depends(get_db)
+    user_service: UserService = Depends(get_user_service)
 ):
     """
     개발 환경에서만 사용 가능한 테스트 로그인 엔드포인트.
@@ -32,7 +38,7 @@ async def test_login(
 
     Args:
         kakao_id: 로그인할 카카오 ID (예: "test_user_123")
-        db: 데이터베이스 세션
+        user_service: UserService 의존성 주입
 
     Returns:
         세션 ID 쿠키가 포함된 로그인 성공 응답
@@ -48,18 +54,10 @@ async def test_login(
         )
 
     # 사용자 조회 또는 생성
-    result = await db.execute(select(User).where(User.kakao_id == kakao_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        # 신규 사용자 생성
-        user = User(
-            kakao_id=kakao_id,
-            nickname=f"테스트유저_{kakao_id}"
-        )
-        db.add(user)
-        await db.commit()
-        await db.refresh(user)
+    user, is_new = await user_service.get_or_create_user(
+        kakao_id=kakao_id,
+        nickname=f"테스트유저_{kakao_id}"
+    )
 
     # 세션 생성
     session_id = await session_service.create_session(user.user_id)
@@ -103,14 +101,14 @@ async def kakao_login():
 @router.get("/kakao/callback", summary="카카오 인증 콜백 처리")
 async def kakao_callback(
     code: str,
-    db: AsyncSession = Depends(get_db)
+    user_service: UserService = Depends(get_user_service)
 ):
     """
     카카오로부터 받은 인가 코드로 사용자를 DB에 저장/조회하고 세션을 생성합니다.
 
     Args:
         code: 카카오로부터 받은 인가 코드
-        db: 데이터베이스 세션
+        user_service: UserService 의존성 주입
 
     Returns:
         메인 페이지로의 리디렉션 응답 (세션 ID 쿠키 포함)
@@ -147,19 +145,9 @@ async def kakao_callback(
         logger.info(f"카카오 인증 성공 - kakao_id: {kakao_id}, nickname: {nickname}")
 
         # 2. DB에서 사용자 조회 또는 생성
-        result = await db.execute(select(User).where(User.kakao_id == kakao_id))
-        user = result.scalar_one_or_none()
-
-        if not user:
-            logger.info("신규 사용자 생성")
-            # 신규 사용자 생성
-            user = User(
-                kakao_id=kakao_id,
-                nickname=nickname
-            )
-            db.add(user)
-            await db.commit()
-            await db.refresh(user)
+        user, is_new = await user_service.get_or_create_user(kakao_id, nickname)
+        if is_new:
+            logger.info(f"신규 사용자 생성 - user_id: {user.user_id}")
         else:
             logger.info(f"기존 사용자 조회 - user_id: {user.user_id}")
 
@@ -216,14 +204,14 @@ async def get_session(
 )
 async def get_current_user(
     user_id: int = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db)
+    user_service: UserService = Depends(get_user_service)
 ):
     """
     현재 로그인된 사용자의 상세 정보를 반환합니다.
 
     Args:
         user_id: get_current_user_id 의존성에서 주입된 사용자 ID
-        db: 데이터베이스 세션
+        user_service: UserService 의존성 주입
 
     Returns:
         LoginResponse: 사용자 상세 정보
@@ -231,8 +219,7 @@ async def get_current_user(
     Raises:
         HTTPException: 사용자를 찾을 수 없는 경우
     """
-    result = await db.execute(select(User).where(User.user_id == user_id))
-    user = result.scalar_one_or_none()
+    user = await user_service.get_user_by_id(user_id)
 
     if not user:
         raise HTTPException(
