@@ -26,42 +26,62 @@ Searchive-backend/
 ├── .env_example            # 환경 변수 예시 파일
 ├── .gitignore              # Git 무시 목록
 ├── alembic/                # Alembic 마이그레이션 스크립트 저장 폴더
-│   ├── versions/
-│   └── ...
+│   ├── versions/           # 마이그레이션 버전 파일들
+│   ├── env.py              # Alembic 환경 설정
+│   ├── script.py.mako      # 마이그레이션 템플릿
+│   └── README
 ├── alembic.ini             # Alembic 설정 파일
 ├── requirements.txt        # Python 의존성 목록
+├── pytest.ini              # Pytest 설정 파일
 ├── README.md               # 프로젝트 설명 파일
+├── tests/                  # 테스트 코드
+│   ├── __init__.py
+│   ├── conftest.py         # Pytest 설정 및 픽스처
+│   ├── README.md           # 테스트 가이드
+│   ├── unit/               # 단위 테스트
+│   │   ├── __init__.py
+│   │   └── domains/
+│   │       └── __init__.py
+│   └── integration/        # 통합 테스트
+│       ├── __init__.py
+│       ├── domains/
+│       │   └── __init__.py
+│       ├── test_db_connection.py
+│       └── test_redis_connection.py
 └── src/                    # 소스 코드 루트
     ├── __init__.py
     ├── main.py             # FastAPI 앱 생성 및 라우터 포함
     ├── core/               # 프로젝트 핵심 설정
     │   ├── __init__.py
-    │   └── config.py       # .env 파일을 읽어오는 환경 변수 관리
+    │   ├── config.py       # .env 파일을 읽어오는 환경 변수 관리
+    │   ├── exception.py    # 예외 처리 핸들러
+    │   ├── redis.py        # Redis 연결 및 세션 관리
+    │   └── security.py     # 보안 관련 유틸리티 (JWT 등)
     ├── db/                 # 데이터베이스 연결 및 세션 관리
     │   ├── __init__.py
     │   └── session.py
     └── domains/            # ✨ 핵심: 도메인별 모듈
         ├── __init__.py
-        ├── auth/           # 인증 도메인 (예시)
+        ├── auth/           # 인증 도메인
         │   ├── __init__.py
-        │   ├── router.py
-        │   ├── schemas.py
-        │   ├── services.py
-        │   ├── repositories.py
-        │   └── models.py
-        ├── documents/      # 문서 관리 도메인 (예시)
+        │   ├── controller.py   # API 엔드포인트 (라우터)
+        │   ├── schema/         # Pydantic 스키마
+        │   │   ├── __init__.py
+        │   │   ├── request.py  # 요청 스키마
+        │   │   └── response.py # 응답 스키마
+        │   └── service/        # 비즈니스 로직
+        │       ├── __init__.py
+        │       ├── kakao_service.py    # 카카오 OAuth 서비스
+        │       └── session_service.py  # 세션 관리 서비스
+        ├── users/          # 사용자 도메인
         │   ├── __init__.py
-        │   ├── router.py
-        │   ├── schemas.py
-        │   ├── services.py
-        │   ├── repositories.py
-        │   └── models.py
-        └── search/         # 검색 도메인 (예시)
+        │   └── models.py       # User 엔티티 모델
+        ├── documents/      # 문서 관리 도메인
+        │   ├── __init__.py
+        │   └── models.py       # Document 엔티티 모델
+        └── tags/           # 태그 도메인
             ├── __init__.py
-            ├── router.py
-            ├── schemas.py
-            ├── services.py
-            └── repositories.py
+            └── models.py       # Tag 엔티티 모델
 ```
 
 ---

@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     LANGCHAIN_PROJECT: str = "searchive"
 
     # CORS 설정
-    ALLOWED_ORIGINS: str = "http://localhost:3000"
+    ALLOWED_ORIGINS: str = "http://localhost:5173"
 
     # 카카오 OAuth 설정
     KAKAO_CLIENT_ID: str
@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     KAKAO_REDIRECT_URI: str
 
     # 프론트엔드 URL
-    FRONTEND_URL: str = "http://localhost:3000"
+    FRONTEND_URL: str = "http://localhost:5173"
 
     @property
     def DATABASE_URL(self) -> str:
