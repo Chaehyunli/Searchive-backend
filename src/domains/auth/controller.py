@@ -21,6 +21,69 @@ kakao_service = KakaoOAuthService()
 session_service = SessionService()
 
 
+@router.post("/test/login", summary="[개발 전용] 테스트 로그인")
+async def test_login(
+    kakao_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    개발 환경에서만 사용 가능한 테스트 로그인 엔드포인트.
+    카카오 OAuth 없이 직접 로그인할 수 있습니다.
+
+    Args:
+        kakao_id: 로그인할 카카오 ID (예: "test_user_123")
+        db: 데이터베이스 세션
+
+    Returns:
+        세션 ID 쿠키가 포함된 로그인 성공 응답
+
+    Raises:
+        HTTPException: 개발 환경이 아닌 경우 403 에러
+    """
+    # 운영 환경에서는 사용 불가
+    if settings.APP_ENV != "development":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="테스트 로그인은 개발 환경에서만 사용 가능합니다"
+        )
+
+    # 사용자 조회 또는 생성
+    result = await db.execute(select(User).where(User.kakao_id == kakao_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        # 신규 사용자 생성
+        user = User(
+            kakao_id=kakao_id,
+            nickname=f"테스트유저_{kakao_id}"
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+
+    # 세션 생성
+    session_id = await session_service.create_session(user.user_id)
+
+    # 응답에 쿠키 설정
+    response = JSONResponse(
+        content={
+            "message": "테스트 로그인 성공",
+            "user_id": user.user_id,
+            "kakao_id": user.kakao_id,
+            "nickname": user.nickname
+        }
+    )
+    response.set_cookie(
+        key="session_id",
+        value=session_id,
+        httponly=True,
+        max_age=3600,
+        samesite="lax"
+    )
+
+    return response
+
+
 @router.get("/kakao/login", summary="카카오 로그인 페이지로 리디렉션")
 async def kakao_login():
     """
