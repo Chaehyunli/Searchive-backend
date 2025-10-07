@@ -124,50 +124,17 @@ async def kakao_callback(
     try:
         logger.info(f"카카오 콜백 시작 - code: {code[:10]}...")
 
-        # 0. 코드 중복 사용 방지 - 이미 사용된 코드인지 확인
-        existing_session = await session_service.get_session_by_code(code)
-        if existing_session:
-            logger.info(f"이미 사용된 코드 - 기존 세션 사용: {existing_session[:10]}...")
-            # 이미 사용된 코드라면 기존 세션으로 리디렉션
-            frontend_callback_url = f"{settings.FRONTEND_URL}/auth/kakao/callback"
-            response = RedirectResponse(url=frontend_callback_url)
-            response.set_cookie(
-                key="session_id",
-                value=existing_session,
-                httponly=True,
-                max_age=3600,
-                samesite="lax"
-            )
-            return response
-
-        # 0-1. 코드 처리 중 플래그 설정 (동시 요청 방지)
+        # 0. 코드 중복 사용 방지 락 (동시 요청 방지)
         code_lock_key = f"kakao_code_lock:{code}"
         from src.core.redis import redis_client
         is_processing = await redis_client.get(code_lock_key)
 
         if is_processing:
-            logger.warning(f"이미 처리 중인 코드 - 대기 중...")
-            # 이미 처리 중이면 1초 대기 후 세션 확인
-            import asyncio
-            await asyncio.sleep(1)
-            existing_session = await session_service.get_session_by_code(code)
-            if existing_session:
-                logger.info(f"처리 완료된 세션 사용: {existing_session[:10]}...")
-                frontend_callback_url = f"{settings.FRONTEND_URL}/auth/kakao/callback"
-                response = RedirectResponse(url=frontend_callback_url)
-                response.set_cookie(
-                    key="session_id",
-                    value=existing_session,
-                    httponly=True,
-                    max_age=3600,
-                    samesite="lax"
-                )
-                return response
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="로그인 처리 중입니다. 잠시 후 다시 시도해주세요."
-                )
+            logger.warning(f"이미 처리 중인 코드 - 중복 요청 차단")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="로그인 처리 중입니다. 잠시 후 다시 시도해주세요."
+            )
 
         # 코드 처리 시작 플래그 설정 (30초 유효)
         await redis_client.setex(code_lock_key, 30, "processing")
@@ -196,14 +163,11 @@ async def kakao_callback(
         else:
             logger.info(f"기존 사용자 조회 - user_id: {user.user_id}")
 
-        # 3. 세션 생성
+        # 3. 세션 생성 (Redis에 session:{session_id} -> {"user_id": user_id} 저장)
         session_id = await session_service.create_session(user.user_id)
         logger.info(f"세션 생성 완료 - session_id: {session_id[:10]}...")
 
-        # 4. 코드와 세션 ID 매핑 저장 (10분 동안 유효)
-        await session_service.save_code_session_mapping(code, session_id)
-
-        # 5. 쿠키에 세션 ID 설정 후 프론트엔드 콜백 페이지로 리디렉션
+        # 4. 쿠키에 세션 ID 설정 후 프론트엔드 콜백 페이지로 리디렉션
         frontend_callback_url = f"{settings.FRONTEND_URL}/auth/kakao/callback"
         response = RedirectResponse(url=frontend_callback_url)
         response.set_cookie(
