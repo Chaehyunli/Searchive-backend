@@ -67,14 +67,11 @@ async def health_check():
 
 # 도메인 라우터 포함
 from src.domains.auth.controller import router as auth_router
+from src.domains.documents.controller import router as documents_router
 from src.core.redis import close_redis
 
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["Authentication"])
-
-# TODO: 추가 도메인 라우터가 생성되면 여기에 포함
-# 예시:
-# from src.domains.documents.router import router as documents_router
-# app.include_router(documents_router, prefix="/api/v1/documents", tags=["Documents"])
+app.include_router(documents_router, prefix="/api/v1/documents", tags=["Documents"])
 
 
 if __name__ == "__main__":

@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     # 프론트엔드 URL
     FRONTEND_URL: str = "http://localhost:5173"
 
+    # MinIO 설정
+    MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_ACCESS_KEY: str
+    MINIO_SECRET_KEY: str
+    MINIO_SECURE: bool = False
+    MINIO_BUCKET_NAME: str = "user-documents"
+
     @property
     def DATABASE_URL(self) -> str:
         """PostgreSQL 데이터베이스 URL 생성"""
