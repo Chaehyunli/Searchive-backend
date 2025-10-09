@@ -85,11 +85,14 @@ Searchive-backend/
         │   ├── models.py       # Document 엔티티 모델
         │   ├── schema.py       # Document Pydantic 스키마
         │   ├── repository.py   # Document 데이터 접근 계층
-        │   ├── service.py      # Document 비즈니스 로직 (파일 검증, MinIO 업로드)
+        │   ├── service.py      # Document 비즈니스 로직 (파일 검증, MinIO 업로드, AI 태깅)
         │   └── controller.py   # Document API 엔드포인트
         └── tags/           # 태그 도메인
             ├── __init__.py
-            └── models.py       # Tag 엔티티 모델
+            ├── models.py       # Tag, DocumentTag 엔티티 모델
+            ├── schema.py       # Tag Pydantic 스키마
+            ├── repository.py   # Tag 데이터 접근 계층
+            └── service.py      # Tag 비즈니스 로직
 ```
 
 ---
@@ -102,7 +105,11 @@ Searchive-backend/
 -   **Search**: Elasticsearch
 -   **Object Storage**: MinIO
 -   **Data Validation**: Pydantic
--   **AI Frameworks**: LangChain, LangGraph
+-   **AI Frameworks**:
+    -   LangChain, LangGraph (RAG 파이프라인)
+    -   KeyBERT (키워드 추출)
+    -   Sentence Transformers (임베딩)
+    -   OpenAI API (LLM)
 -   **Async Runtime**: Uvicorn
 
 ---
@@ -135,9 +142,13 @@ cp .env_example .env
 그 후 `.env` 파일을 열어 데이터베이스 정보 및 API 키를 설정합니다.
 
 **필수 환경 변수:**
-- `MINIO_ACCESS_KEY`: MinIO 액세스 키
-- `MINIO_SECRET_KEY`: MinIO 시크릿 키
-- 기타 DB, Redis, Elasticsearch 설정
+- `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`: PostgreSQL 설정
+- `REDIS_HOST`, `REDIS_PORT`: Redis 설정
+- `ELASTICSEARCH_HOST`, `ELASTICSEARCH_PORT`: Elasticsearch 설정
+- `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`: MinIO 설정
+- `OPENAI_API_KEY`: OpenAI API 키 (LLM 사용)
+- `KEYWORD_EXTRACTION_COUNT`: 자동 태그 추출 개수 (기본값: 3)
+- `KAKAO_CLIENT_ID`, `KAKAO_CLIENT_SECRET`: 카카오 OAuth 설정
 
 ### 4. DB 인프라 실행
 
@@ -184,7 +195,7 @@ Documents 도메인은 사용자의 파일 업로드, 조회, 삭제 기능을 �
 ### API 엔드포인트
 
 #### 1. 문서 업로드 (POST /api/v1/documents/upload)
-사용자가 문서를 MinIO에 업로드하고 메타데이터를 PostgreSQL에 저장합니다.
+사용자가 문서를 MinIO에 업로드하고 메타데이터를 PostgreSQL에 저장합니다. **AI 기반 자동 태그 생성** 기능이 포함되어 있습니다.
 
 **요청:**
 - Method: `POST`
@@ -209,12 +220,23 @@ Documents 도메인은 사용자의 파일 업로드, 조회, 삭제 기능을 �
   "file_type": "application/pdf",
   "file_size_kb": 1234,
   "uploaded_at": "2025-10-08T15:30:00Z",
-  "updated_at": "2025-10-08T15:30:00Z"
+  "updated_at": "2025-10-08T15:30:00Z",
+  "tags": [
+    {"tag_id": 1, "name": "machine learning"},
+    {"tag_id": 2, "name": "deep learning"},
+    {"tag_id": 3, "name": "neural network"}
+  ],
+  "extraction_method": "keybert"
 }
 ```
 
+**AI 자동 태깅:**
+- 문서 업로드 시 AI가 텍스트를 분석하여 자동으로 키워드를 추출합니다
+- 추출 방법: KeyBERT (기본) 또는 Elasticsearch TF-IDF (백업)
+- 추출된 키워드는 `tags` 테이블에 저장되고, `document_tags` 연결 테이블을 통해 문서와 연결됩니다
+
 #### 2. 문서 목록 조회 (GET /api/v1/documents)
-현재 로그인된 사용자의 모든 문서 목록을 조회합니다.
+현재 로그인된 사용자의 모든 문서 목록을 조회합니다. 각 문서에 연결된 태그 정보도 함께 반환됩니다.
 
 **응답 (200 OK):**
 ```json
@@ -225,7 +247,11 @@ Documents 도메인은 사용자의 파일 업로드, 조회, 삭제 기능을 �
     "file_type": "application/pdf",
     "file_size_kb": 1234,
     "uploaded_at": "2025-10-08T15:30:00Z",
-    "updated_at": "2025-10-08T15:30:00Z"
+    "updated_at": "2025-10-08T15:30:00Z",
+    "tags": [
+      {"tag_id": 1, "name": "machine learning"},
+      {"tag_id": 2, "name": "deep learning"}
+    ]
   }
 ]
 ```
@@ -243,7 +269,11 @@ Documents 도메인은 사용자의 파일 업로드, 조회, 삭제 기능을 �
   "file_type": "application/pdf",
   "file_size_kb": 1234,
   "uploaded_at": "2025-10-08T15:30:00Z",
-  "updated_at": "2025-10-08T15:30:00Z"
+  "updated_at": "2025-10-08T15:30:00Z",
+  "tags": [
+    {"tag_id": 1, "name": "machine learning"},
+    {"tag_id": 2, "name": "deep learning"}
+  ]
 }
 ```
 
@@ -291,6 +321,123 @@ Documents 도메인은 SOLID 원칙을 따라 계층이 분리되어 있습니�
 3. **Repository (`repository.py`)**: DB CRUD 연산 (N+1 문제 방지)
 4. **Schema (`schema.py`)**: Pydantic 모델 (요청/응답 검증)
 5. **Models (`models.py`)**: SQLAlchemy ORM 모델 (DB 테이블)
+
+---
+
+## 🏷️ Tags & DocumentTags (태그 시스템)
+
+Tags 도메인은 문서 분류와 검색을 위한 태그 관리 기능을 제공합니다. **다대다(Many-to-Many) 관계**를 지원하여 하나의 문서에 여러 태그를 연결할 수 있습니다.
+
+### 데이터베이스 구조
+
+#### 1. `tags` 테이블
+```sql
+CREATE TABLE tags (
+    tag_id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+- **tag_id**: 태그 고유 ID (자동 증가)
+- **name**: 태그 이름 (중복 불가, 인덱스)
+- **created_at**: 태그 생성 일시
+
+#### 2. `document_tags` 테이블 (연결 테이블)
+```sql
+CREATE TABLE document_tags (
+    document_id BIGINT REFERENCES documents(document_id) ON DELETE CASCADE,
+    tag_id BIGINT REFERENCES tags(tag_id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (document_id, tag_id)
+);
+```
+
+- **document_id**: 문서 ID (외래 키, CASCADE 삭제)
+- **tag_id**: 태그 ID (외래 키, CASCADE 삭제)
+- **created_at**: 연결 생성 일시
+- **복합 기본 키**: (document_id, tag_id) - 중복 연결 방지
+
+### AI 기반 자동 태깅 (Keyword Extraction)
+
+문서 업로드 시 AI가 자동으로 키워드를 추출하고 태그를 생성합니다.
+
+#### 추출 방법
+
+1. **KeyBERT (기본 방법)**
+   - BERT 기반 임베딩을 사용한 키워드 추출
+   - 문맥을 고려한 의미 있는 키워드 추출
+   - 추출 개수: 환경 변수 `KEYWORD_EXTRACTION_COUNT` (기본값: 3개)
+
+2. **Elasticsearch TF-IDF (백업 방법)**
+   - KeyBERT 실패 시 자동으로 전환
+   - 전체 사용자 문서를 기반으로 TF-IDF 계산
+   - 문서 간 상대적 중요도 고려
+
+#### 추출 프로세스
+
+```python
+1. 문서 업로드 → MinIO 저장
+2. 텍스트 추출 (PDF, DOCX, PPTX 등)
+3. KeyBERT 키워드 추출 시도
+   ├─ 성공 → 키워드 반환
+   └─ 실패 → Elasticsearch TF-IDF 시도
+4. 추출된 키워드 → tags 테이블 생성 (중복 시 재사용)
+5. document_tags 연결 테이블에 매핑
+```
+
+### 태그 관리 기능
+
+#### 1. Get-or-Create 패턴
+- 태그가 이미 존재하면 재사용, 없으면 신규 생성
+- 중복 태그 방지 및 데이터 일관성 유지
+
+```python
+# 예시: "machine learning" 태그
+tag = await tag_service.get_or_create_tag("machine learning")
+```
+
+#### 2. N+1 문제 방지
+- 여러 태그를 한 번의 쿼리로 조회/생성
+- `bulk_get_or_create()` 메서드 사용
+
+```python
+# 예시: 3개 태그를 한 번에 처리
+tags = await tag_service.get_or_create_tags(
+    ["machine learning", "deep learning", "neural network"]
+)
+```
+
+#### 3. CASCADE 삭제
+- 문서 삭제 시 연결된 `document_tags` 자동 삭제
+- 태그는 다른 문서에서도 사용될 수 있으므로 유지
+
+### 아키텍처 (계층 분리)
+
+Tags 도메인도 SOLID 원칙을 따라 계층이 분리되어 있습니다:
+
+1. **Models (`models.py`)**:
+   - `Tag`: 태그 엔티티
+   - `DocumentTag`: 문서-태그 연결 엔티티
+
+2. **Repository (`repository.py`)**:
+   - `TagRepository`: 태그 CRUD 연산
+   - `DocumentTagRepository`: 문서-태그 연결 CRUD 연산
+
+3. **Service (`service.py`)**:
+   - `TagService`: 태그 비즈니스 로직 (Get-or-Create, 문서 연결)
+
+4. **Schema (`schema.py`)**:
+   - `TagResponse`: 태그 응답 스키마
+   - `DocumentTagResponse`: 문서-태그 연결 응답 스키마
+   - `ExtractedKeywordsResponse`: 키워드 추출 결과 스키마
+
+### 성능 최적화
+
+- **인덱스**: `tags.name` 컬럼에 인덱스 설정 (빠른 조회)
+- **Bulk Operations**: 여러 태그를 한 번에 처리하여 DB 쿼리 최소화
+- **Eager Loading**: `selectinload()`를 사용하여 N+1 문제 방지
+- **트랜잭션**: 태그 생성/연결을 하나의 트랜잭션으로 처리
 
 ---
 

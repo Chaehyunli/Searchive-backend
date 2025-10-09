@@ -152,7 +152,7 @@ class ElasticsearchClient:
         size: int = 3
     ) -> List[str]:
         """
-        Significant Text Aggregation을 사용하여 문서의 핵심 키워드 추출
+        More Like This Query를 사용하여 문서의 핵심 키워드 추출
 
         Args:
             document_id: 대상 문서 ID
@@ -165,46 +165,58 @@ class ElasticsearchClient:
             await self.connect()
 
         try:
-            # 1. 대상 문서의 내용 조회
-            doc = await self.client.get(index=self.index_name, id=str(document_id))
-            doc_content = doc["_source"]["content"]
+            # 1. 대상 문서 조회
+            doc_response = await self.client.get(index=self.index_name, id=str(document_id))
+            doc_content = doc_response["_source"]["content"]
 
-            # 2. Significant Text Aggregation 실행
-            # "배경(background)"은 전체 문서, "대상(foreground)"은 현재 문서
-            query = {
-                "size": 0,
-                "query": {
-                    "bool": {
-                        "must": [
-                            {"match": {"content": doc_content}}
-                        ]
-                    }
-                },
-                "aggs": {
-                    "significant_keywords": {
-                        "significant_text": {
-                            "field": "content",
-                            "size": size * 2,  # 여유있게 추출
-                            "min_doc_count": 1
-                        }
-                    }
-                }
-            }
+            # 2. 텍스트가 너무 길면 앞부분만 사용 (성능 최적화)
+            max_length = 5000  # 최대 5000 글자까지만 사용
+            if len(doc_content) > max_length:
+                doc_content = doc_content[:max_length]
 
-            response = await self.client.search(
+            # 3. Term Vectors API 사용하여 TF-IDF 기반 키워드 추출
+            tv_response = await self.client.termvectors(
                 index=self.index_name,
-                body=query
+                id=str(document_id),
+                fields=["content"],
+                term_statistics=True,
+                field_statistics=True
             )
 
-            # 3. 결과 파싱
-            buckets = response["aggregations"]["significant_keywords"]["buckets"]
-            keywords = [bucket["key"] for bucket in buckets[:size]]
+            # 4. 결과 파싱: TF-IDF 점수가 높은 상위 N개 추출
+            if "term_vectors" not in tv_response or "content" not in tv_response["term_vectors"]:
+                logger.warning(f"문서 {document_id}에서 term vectors를 찾을 수 없습니다.")
+                return []
 
-            logger.info(f"Significant Text 추출 완료: document_id={document_id}, keywords={keywords}")
+            terms = tv_response["term_vectors"]["content"]["terms"]
+
+            # TF-IDF 계산 및 정렬
+            term_scores = []
+            for term, term_info in terms.items():
+                # TF (Term Frequency)
+                tf = term_info.get("term_freq", 1)
+                # DF (Document Frequency)
+                df = term_info.get("doc_freq", 1)
+                # IDF 계산
+                total_docs = tv_response["term_vectors"]["content"]["field_statistics"]["doc_count"]
+                import math
+                idf = math.log((total_docs + 1) / (df + 1)) + 1
+                # TF-IDF 점수
+                tfidf = tf * idf
+
+                # 단어 길이 필터 (너무 짧거나 긴 단어 제외)
+                if 2 <= len(term) <= 30:
+                    term_scores.append((term, tfidf))
+
+            # 점수 기준 정렬 후 상위 N개 추출
+            term_scores.sort(key=lambda x: x[1], reverse=True)
+            keywords = [term for term, score in term_scores[:size]]
+
+            logger.info(f"TF-IDF 키워드 추출 완료: document_id={document_id}, keywords={keywords}")
             return keywords
 
         except Exception as e:
-            logger.error(f"Significant Text 추출 실패: {e}", exc_info=True)
+            logger.error(f"키워드 추출 실패: {e}", exc_info=True)
             return []
 
     async def delete_document(self, document_id: int) -> bool:
