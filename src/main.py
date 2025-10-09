@@ -36,11 +36,11 @@ app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
 
-@app.on_event("startup")
-async def startup_event():
-    """애플리케이션 시작 시 데이터베이스 마이그레이션 실행"""
-    alembic_cfg = Config("alembic.ini")
-    command.upgrade(alembic_cfg, "head")
+# @app.on_event("startup")
+# async def startup_event():
+#     """애플리케이션 시작 시 데이터베이스 마이그레이션 실행"""
+#     alembic_cfg = Config("alembic.ini")
+#     command.upgrade(alembic_cfg, "head")
 
 
 @app.on_event("shutdown")

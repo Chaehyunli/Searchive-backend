@@ -3,6 +3,7 @@
 from typing import Optional, List
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from src.domains.documents.models import Document
 
 
@@ -72,7 +73,7 @@ class DocumentRepository:
         user_id: int
     ) -> Optional[Document]:
         """
-        문서 ID와 사용자 ID로 문서 조회 (권한 검증용)
+        문서 ID와 사용자 ID로 문서 조회 (권한 검증용, 태그 포함, N+1 문제 방지)
 
         Args:
             document_id: 문서 고유 ID
@@ -82,7 +83,9 @@ class DocumentRepository:
             Document 객체 또는 None
         """
         result = await self.db.execute(
-            select(Document).where(
+            select(Document)
+            .options(selectinload(Document.document_tags).selectinload(lambda dt: dt.tag))
+            .where(
                 Document.document_id == document_id,
                 Document.user_id == user_id
             )
@@ -91,7 +94,7 @@ class DocumentRepository:
 
     async def find_all_by_user_id(self, user_id: int) -> List[Document]:
         """
-        사용자 ID로 모든 문서 조회
+        사용자 ID로 모든 문서 조회 (태그 포함, N+1 문제 방지)
 
         Args:
             user_id: 사용자 ID
@@ -101,6 +104,7 @@ class DocumentRepository:
         """
         result = await self.db.execute(
             select(Document)
+            .options(selectinload(Document.document_tags).selectinload(lambda dt: dt.tag))
             .where(Document.user_id == user_id)
             .order_by(Document.uploaded_at.desc())
         )

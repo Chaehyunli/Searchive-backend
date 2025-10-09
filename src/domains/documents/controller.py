@@ -22,7 +22,7 @@ router = APIRouter()
 def get_document_service(db: AsyncSession = Depends(get_db)) -> DocumentService:
     """DocumentService 의존성 주입"""
     document_repository = DocumentRepository(db)
-    return DocumentService(document_repository)
+    return DocumentService(document_repository, db)
 
 
 @router.post(
@@ -55,12 +55,14 @@ async def upload_document(
 
     logger.info(f"문서 업로드 요청: user_id={user_id}, filename={file.filename}")
 
-    document = await document_service.upload_document(
+    document, tags, extraction_method = await document_service.upload_document(
         user_id=user_id,
         file=file
     )
 
-    logger.info(f"문서 업로드 성공: document_id={document.document_id}")
+    logger.info(f"문서 업로드 성공: document_id={document.document_id}, tags={len(tags)}개")
+
+    from src.domains.documents.schema import TagSchema
 
     return DocumentUploadResponse(
         document_id=document.document_id,
@@ -70,7 +72,9 @@ async def upload_document(
         file_type=document.file_type,
         file_size_kb=document.file_size_kb,
         uploaded_at=document.uploaded_at,
-        updated_at=document.updated_at
+        updated_at=document.updated_at,
+        tags=[TagSchema(tag_id=tag.tag_id, name=tag.name) for tag in tags],
+        extraction_method=extraction_method
     )
 
 
@@ -95,6 +99,8 @@ async def get_documents(
     """
     documents = await document_service.get_user_documents(user_id)
 
+    from src.domains.documents.schema import TagSchema
+
     return [
         DocumentListResponse(
             document_id=doc.document_id,
@@ -102,7 +108,8 @@ async def get_documents(
             file_type=doc.file_type,
             file_size_kb=doc.file_size_kb,
             uploaded_at=doc.uploaded_at,
-            updated_at=doc.updated_at
+            updated_at=doc.updated_at,
+            tags=[TagSchema(tag_id=dt.tag.tag_id, name=dt.tag.name) for dt in doc.document_tags]
         )
         for doc in documents
     ]
@@ -143,6 +150,8 @@ async def get_document(
             detail="문서를 찾을 수 없습니다."
         )
 
+    from src.domains.documents.schema import TagSchema
+
     return DocumentDetailResponse(
         document_id=document.document_id,
         user_id=document.user_id,
@@ -151,7 +160,8 @@ async def get_document(
         file_type=document.file_type,
         file_size_kb=document.file_size_kb,
         uploaded_at=document.uploaded_at,
-        updated_at=document.updated_at
+        updated_at=document.updated_at,
+        tags=[TagSchema(tag_id=dt.tag.tag_id, name=dt.tag.name) for dt in document.document_tags]
     )
 
 

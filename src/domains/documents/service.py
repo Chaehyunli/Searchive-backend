@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
 """Document 도메인 Service"""
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import uuid
 from pathlib import Path
 from fastapi import UploadFile, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 from src.domains.documents.repository import DocumentRepository
 from src.domains.documents.models import Document
+from src.domains.tags.service import TagService
+from src.domains.tags.models import Tag
 from src.core.minio_client import minio_client
+from src.core.text_extractor import text_extractor
+from src.core.elasticsearch_client import elasticsearch_client
+from src.core.keyword_extraction import keyword_extraction_service
 import logging
 
 logger = logging.getLogger(__name__)
@@ -27,29 +33,32 @@ ALLOWED_MIME_TYPES = {
 class DocumentService:
     """Document 비즈니스 로직 처리 계층"""
 
-    def __init__(self, document_repository: DocumentRepository):
+    def __init__(self, document_repository: DocumentRepository, db: AsyncSession = None):
         """
         DocumentService 초기화
 
         Args:
             document_repository: DocumentRepository 인스턴스
+            db: AsyncSession (TagService를 위해 필요)
         """
         self.document_repository = document_repository
+        self.db = db
+        self.tag_service = TagService(db) if db else None
 
     async def upload_document(
         self,
         user_id: int,
         file: UploadFile
-    ) -> Document:
+    ) -> Tuple[Document, List[Tag], str]:
         """
-        문서 업로드 (파일 검증 → MinIO 저장 → DB 저장)
+        문서 업로드 (파일 검증 → MinIO 저장 → DB 저장 → 텍스트 추출 → Elasticsearch 색인 → 키워드 추출 → 태그 생성)
 
         Args:
             user_id: 업로드하는 사용자 ID
             file: 업로드된 파일
 
         Returns:
-            생성된 Document 객체
+            (생성된 Document 객체, 생성된 Tag 리스트, 추출 방법)
 
         Raises:
             HTTPException: 파일 형식이 허용되지 않거나 업로드 실패 시
@@ -95,7 +104,49 @@ class DocumentService:
             )
             logger.info(f"문서 메타데이터 저장 성공: document_id={document.document_id}")
 
-            return document
+            # 6. 텍스트 추출
+            extracted_text = text_extractor.extract_text_from_bytes(
+                file_data=file_data,
+                file_type=file.content_type,
+                filename=file.filename
+            )
+
+            if not extracted_text or len(extracted_text.strip()) < 10:
+                logger.warning(f"문서 {document.document_id}에서 텍스트 추출 실패 또는 너무 짧음. 태그 생성 건너뜀.")
+                return document, [], "none"
+
+            # 7. Elasticsearch에 문서 색인
+            await elasticsearch_client.index_document(
+                document_id=document.document_id,
+                user_id=user_id,
+                content=extracted_text,
+                filename=file.filename,
+                file_type=file.content_type
+            )
+            logger.info(f"Elasticsearch 색인 완료: document_id={document.document_id}")
+
+            # 8. 하이브리드 키워드 추출 (KeyBERT or Elasticsearch)
+            keywords, extraction_method = await keyword_extraction_service.extract_keywords(
+                text=extracted_text,
+                document_id=document.document_id
+            )
+
+            if not keywords:
+                logger.warning(f"문서 {document.document_id}에서 키워드 추출 실패. 태그 생성 건너뜀.")
+                return document, [], extraction_method
+
+            # 9. 태그 생성 및 문서에 연결 (Get-or-Create 패턴으로 N+1 문제 방지)
+            if self.tag_service:
+                tags = await self.tag_service.attach_tags_to_document(
+                    document_id=document.document_id,
+                    tag_names=keywords
+                )
+                logger.info(f"문서 {document.document_id}에 태그 {len(tags)}개 연결 완료")
+            else:
+                tags = []
+                logger.warning("TagService가 초기화되지 않았습니다. 태그 생성 건너뜀.")
+
+            return document, tags, extraction_method
 
         except HTTPException:
             raise

@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     MINIO_SECURE: bool = False
     MINIO_BUCKET_NAME: str = "user-documents"
 
+    # AI 자동 태깅 설정
+    KEYWORD_EXTRACTION_THRESHOLD: int = 5  # Cold Start와 Normal 경로를 구분하는 문서 수 임계값
+    KEYWORD_EXTRACTION_COUNT: int = 3  # 추출할 키워드 개수
+
     @property
     def DATABASE_URL(self) -> str:
         """PostgreSQL 데이터베이스 URL 생성"""

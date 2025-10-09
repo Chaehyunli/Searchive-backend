@@ -1,7 +1,17 @@
 # -*- coding: utf-8 -*-
 """Document 도메인 스키마"""
 from datetime import datetime
+from typing import List, Optional
 from pydantic import BaseModel, Field
+
+
+class TagSchema(BaseModel):
+    """태그 스키마"""
+    tag_id: int = Field(..., description="태그 고유 ID")
+    name: str = Field(..., description="태그 이름")
+
+    class Config:
+        from_attributes = True
 
 
 class DocumentUploadResponse(BaseModel):
@@ -14,6 +24,8 @@ class DocumentUploadResponse(BaseModel):
     file_size_kb: int = Field(..., description="파일 크기 (KB)")
     uploaded_at: datetime = Field(..., description="업로드 일시")
     updated_at: datetime = Field(..., description="최종 수정 일시")
+    tags: List[TagSchema] = Field(default=[], description="자동 생성된 태그 목록")
+    extraction_method: Optional[str] = Field(None, description="키워드 추출 방법 (keybert 또는 elasticsearch)")
 
     class Config:
         from_attributes = True  # ORM 모델 → Pydantic 변환 지원
@@ -27,6 +39,7 @@ class DocumentListResponse(BaseModel):
     file_size_kb: int = Field(..., description="파일 크기 (KB)")
     uploaded_at: datetime = Field(..., description="업로드 일시")
     updated_at: datetime = Field(..., description="최종 수정 일시")
+    tags: List[TagSchema] = Field(default=[], description="태그 목록")
 
     class Config:
         from_attributes = True
@@ -42,6 +55,7 @@ class DocumentDetailResponse(BaseModel):
     file_size_kb: int = Field(..., description="파일 크기 (KB)")
     uploaded_at: datetime = Field(..., description="업로드 일시")
     updated_at: datetime = Field(..., description="최종 수정 일시")
+    tags: List[TagSchema] = Field(default=[], description="태그 목록")
 
     class Config:
         from_attributes = True
