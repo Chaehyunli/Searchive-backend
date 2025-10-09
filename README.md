@@ -56,7 +56,8 @@ Searchive-backend/
     │   ├── config.py       # .env 파일을 읽어오는 환경 변수 관리
     │   ├── exception.py    # 예외 처리 핸들러
     │   ├── redis.py        # Redis 연결 및 세션 관리
-    │   └── security.py     # 보안 관련 유틸리티 (JWT 등)
+    │   ├── security.py     # 보안 관련 유틸리티 (JWT 등)
+    │   └── minio_client.py # MinIO 클라이언트 유틸리티
     ├── db/                 # 데이터베이스 연결 및 세션 관리
     │   ├── __init__.py
     │   └── session.py
@@ -75,10 +76,17 @@ Searchive-backend/
         │       └── session_service.py  # 세션 관리 서비스
         ├── users/          # 사용자 도메인
         │   ├── __init__.py
-        │   └── models.py       # User 엔티티 모델
+        │   ├── models.py       # User 엔티티 모델
+        │   ├── schema.py       # User Pydantic 스키마
+        │   ├── repository.py   # User 데이터 접근 계층
+        │   └── service.py      # User 비즈니스 로직
         ├── documents/      # 문서 관리 도메인
         │   ├── __init__.py
-        │   └── models.py       # Document 엔티티 모델
+        │   ├── models.py       # Document 엔티티 모델
+        │   ├── schema.py       # Document Pydantic 스키마
+        │   ├── repository.py   # Document 데이터 접근 계층
+        │   ├── service.py      # Document 비즈니스 로직 (파일 검증, MinIO 업로드)
+        │   └── controller.py   # Document API 엔드포인트
         └── tags/           # 태그 도메인
             ├── __init__.py
             └── models.py       # Tag 엔티티 모델
@@ -92,6 +100,7 @@ Searchive-backend/
 -   **Database**: PostgreSQL (SQLAlchemy ORM, Alembic)
 -   **Cache**: Redis
 -   **Search**: Elasticsearch
+-   **Object Storage**: MinIO
 -   **Data Validation**: Pydantic
 -   **AI Frameworks**: LangChain, LangGraph
 -   **Async Runtime**: Uvicorn
@@ -124,6 +133,11 @@ cp .env_example .env
 ```
 
 그 후 `.env` 파일을 열어 데이터베이스 정보 및 API 키를 설정합니다.
+
+**필수 환경 변수:**
+- `MINIO_ACCESS_KEY`: MinIO 액세스 키
+- `MINIO_SECRET_KEY`: MinIO 시크릿 키
+- 기타 DB, Redis, Elasticsearch 설정
 
 ### 4. DB 인프라 실행
 
@@ -160,6 +174,123 @@ uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 -   API 서버: http://localhost:8000
 -   API 문서 (Swagger): http://localhost:8000/docs
 -   API 문서 (ReDoc): http://localhost:8000/redoc
+
+---
+
+## 📄 Documents API (문서 관리)
+
+Documents 도메인은 사용자의 파일 업로드, 조회, 삭제 기능을 제공합니다.
+
+### API 엔드포인트
+
+#### 1. 문서 업로드 (POST /api/v1/documents/upload)
+사용자가 문서를 MinIO에 업로드하고 메타데이터를 PostgreSQL에 저장합니다.
+
+**요청:**
+- Method: `POST`
+- Content-Type: `multipart/form-data`
+- Body: `file` (파일)
+- Headers: `Cookie: session_id` (인증 필요)
+
+**허용된 파일 형식:**
+- PDF (`.pdf`)
+- 텍스트 (`.txt`)
+- Excel (`.xlsx`, `.xls`)
+- Word (`.doc`, `.docx`)
+- PowerPoint (`.ppt`, `.pptx`)
+
+**응답 (201 Created):**
+```json
+{
+  "document_id": 101,
+  "user_id": 1,
+  "original_filename": "my_report.pdf",
+  "storage_path": "1/a1b2c3d4-...-uuid.pdf",
+  "file_type": "application/pdf",
+  "file_size_kb": 1234,
+  "uploaded_at": "2025-10-08T15:30:00Z",
+  "updated_at": "2025-10-08T15:30:00Z"
+}
+```
+
+#### 2. 문서 목록 조회 (GET /api/v1/documents)
+현재 로그인된 사용자의 모든 문서 목록을 조회합니다.
+
+**응답 (200 OK):**
+```json
+[
+  {
+    "document_id": 101,
+    "original_filename": "report.pdf",
+    "file_type": "application/pdf",
+    "file_size_kb": 1234,
+    "uploaded_at": "2025-10-08T15:30:00Z",
+    "updated_at": "2025-10-08T15:30:00Z"
+  }
+]
+```
+
+#### 3. 문서 상세 조회 (GET /api/v1/documents/{document_id})
+특정 문서의 상세 정보를 조회합니다. (권한 검증 포함)
+
+**응답 (200 OK):**
+```json
+{
+  "document_id": 101,
+  "user_id": 1,
+  "original_filename": "my_report.pdf",
+  "storage_path": "1/a1b2c3d4-...-uuid.pdf",
+  "file_type": "application/pdf",
+  "file_size_kb": 1234,
+  "uploaded_at": "2025-10-08T15:30:00Z",
+  "updated_at": "2025-10-08T15:30:00Z"
+}
+```
+
+#### 4. 문서 삭제 (DELETE /api/v1/documents/{document_id})
+문서를 MinIO와 PostgreSQL에서 완전히 삭제합니다. (관련 태그도 CASCADE 삭제)
+
+**응답 (200 OK):**
+```json
+{
+  "message": "문서가 성공적으로 삭제되었습니다.",
+  "document_id": 101
+}
+```
+
+### 파일 저장 구조
+
+**MinIO 버킷 구조:**
+```
+user-documents/
+  ├── 1/                          # user_id=1의 폴더
+  │   ├── a1b2c3d4-uuid.pdf
+  │   ├── e5f6g7h8-uuid.docx
+  │   └── i9j0k1l2-uuid.xlsx
+  ├── 2/                          # user_id=2의 폴더
+  │   ├── m3n4o5p6-uuid.pdf
+  │   └── q7r8s9t0-uuid.txt
+```
+
+- 각 사용자는 `user_id` 폴더로 격리됩니다.
+- 파일명은 **UUID(고유 랜덤값)**로 저장되어 충돌과 추측을 방지합니다.
+- 원본 파일명은 PostgreSQL의 `original_filename` 컬럼에 저장됩니다.
+
+### 보안 및 권한
+
+- **인증 필수:** 모든 API는 `get_current_user_id` 의존성을 통해 로그인된 사용자만 접근 가능합니다.
+- **권한 검증:** 사용자는 자신이 업로드한 문서만 조회/삭제할 수 있습니다.
+- **파일 형식 검증:** MIME 타입 기반으로 허용된 형식만 업로드 가능합니다.
+
+### 아키텍처 (계층 분리)
+
+Documents 도메인은 SOLID 원칙을 따라 계층이 분리되어 있습니다:
+
+1. **Controller (`controller.py`)**: HTTP 요청/응답 처리, 인증 검증
+2. **Service (`service.py`)**: 비즈니스 로직 (파일 검증, MinIO 업로드, 에러 처리)
+3. **Repository (`repository.py`)**: DB CRUD 연산 (N+1 문제 방지)
+4. **Schema (`schema.py`)**: Pydantic 모델 (요청/응답 검증)
+5. **Models (`models.py`)**: SQLAlchemy ORM 모델 (DB 테이블)
 
 ---
 
