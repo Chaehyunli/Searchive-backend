@@ -35,6 +35,28 @@ class ElasticsearchClient:
             await self.client.close()
             logger.info("Elasticsearch 연결 종료")
 
+    async def check_nori_plugin(self) -> bool:
+        """Nori 플러그인 설치 여부 확인"""
+        if not self.client:
+            await self.connect()
+
+        try:
+            # 노드 정보를 통해 설치된 플러그인 확인
+            nodes_info = await self.client.nodes.info()
+            for node_id, node_info in nodes_info["nodes"].items():
+                plugins = node_info.get("plugins", [])
+                for plugin in plugins:
+                    if plugin.get("name") == "analysis-nori":
+                        logger.info("Nori 플러그인이 설치되어 있습니다.")
+                        return True
+
+            logger.warning("Nori 플러그인이 설치되어 있지 않습니다. 기본 분석기를 사용합니다.")
+            return False
+
+        except Exception as e:
+            logger.error(f"플러그인 확인 중 오류: {e}")
+            return False
+
     async def create_index_if_not_exists(self):
         """인덱스가 없으면 생성"""
         if not self.client:
@@ -43,36 +65,132 @@ class ElasticsearchClient:
         exists = await self.client.indices.exists(index=self.index_name)
 
         if not exists:
+            # Nori 플러그인 설치 여부 확인
+            has_nori = await self.check_nori_plugin()
+
             # 한국어 분석을 위한 인덱스 설정
-            index_settings = {
-                "settings": {
-                    "analysis": {
-                        "analyzer": {
-                            "korean_analyzer": {
-                                "type": "custom",
-                                "tokenizer": "standard",
-                                "filter": ["lowercase"]
+            if has_nori:
+                # Nori 분석기 사용 (조사, 어미 필터링)
+                index_settings = {
+                    "settings": {
+                        "analysis": {
+                            "analyzer": {
+                                "korean_nori_analyzer": {
+                                    "type": "custom",
+                                    "tokenizer": "nori_tokenizer",
+                                    "filter": [
+                                        "nori_pos_filter",
+                                        "lowercase"
+                                    ]
+                                }
+                            },
+                            "filter": {
+                                "nori_pos_filter": {
+                                    "type": "nori_part_of_speech",
+                                    "stoptags": [
+                                        # 조사 (모든 유형)
+                                        "J",      # 조사 전체
+                                        "JKS",    # 주격 조사 (이, 가)
+                                        "JKC",    # 보격 조사 (이)
+                                        "JKG",    # 관형격 조사 (의)
+                                        "JKO",    # 목적격 조사 (을, 를)
+                                        "JKB",    # 부사격 조사 (에, 에서, 로)
+                                        "JKV",    # 호격 조사 (아, 야)
+                                        "JKQ",    # 인용격 조사 (고, 라고)
+                                        "JX",     # 보조사 (은, 는, 도, 만, 까지)
+                                        "JC",     # 접속 조사 (와, 과, 하고)
+
+                                        # 어미 (모든 유형)
+                                        "E",      # 어미 전체
+                                        "EP",     # 선어말 어미
+                                        "EF",     # 종결 어미 (다, 요)
+                                        "EC",     # 연결 어미 (고, 어서, 며, 면서, 데)
+                                        "ETN",    # 명사형 전성 어미 (음, 기)
+                                        "ETM",    # 관형형 전성 어미 (는, 은, ㄴ, ㄹ)
+
+                                        # 접사
+                                        "XPN",    # 접두사
+                                        "XSA",    # 형용사 파생 접미사 (적, 스럽)
+                                        "XSN",    # 명사 파생 접미사 (성, 화)
+                                        "XSV",    # 동사 파생 접미사
+                                        "XR",     # 어근
+
+                                        # 부호 및 기호
+                                        "SF",     # 마침표, 물음표, 느낌표
+                                        "SP",     # 쉼표, 가운뎃점, 콜론, 빗금
+                                        "SSC",    # 닫는 괄호
+                                        "SSO",    # 여는 괄호
+                                        "SC",     # 구분자 (·, /, :)
+                                        "SE",     # 줄임표 (…)
+                                        "SO",     # 외국어 기호
+                                        "SW",     # 기타 기호
+
+                                        # 기타 불필요한 품사
+                                        "IC",     # 감탄사 (아, 아이고)
+                                        "MAJ",    # 접속 부사 (그리고, 그러나)
+                                        "MAG",    # 일반 부사
+                                        "MM",     # 관형사 (이, 그, 저, 모든)
+                                        "VCP",    # 긍정 지정사 (이다)
+                                        "VCN",    # 부정 지정사 (아니다)
+                                        "VX",     # 보조 용언
+                                        "UNA",    # 알 수 없는 품사
+                                        "NA",     # 미지정
+                                        "VSV"     # 통계 기반 미등록어
+                                    ]
+                                }
                             }
-                        }
-                    },
-                    "number_of_shards": 1,
-                    "number_of_replicas": 0
-                },
-                "mappings": {
-                    "properties": {
-                        "document_id": {"type": "long"},
-                        "user_id": {"type": "long"},
-                        "content": {
-                            "type": "text",
-                            "analyzer": "korean_analyzer",
-                            "fielddata": True  # Significant Text Aggregation을 위해 필요
                         },
-                        "filename": {"type": "keyword"},
-                        "file_type": {"type": "keyword"},
-                        "uploaded_at": {"type": "date"}
+                        "number_of_shards": 1,
+                        "number_of_replicas": 0
+                    },
+                    "mappings": {
+                        "properties": {
+                            "document_id": {"type": "long"},
+                            "user_id": {"type": "long"},
+                            "content": {
+                                "type": "text",
+                                "analyzer": "korean_nori_analyzer",
+                                "fielddata": True  # TF-IDF 기반 키워드 추출을 위해 필요
+                            },
+                            "filename": {"type": "keyword"},
+                            "file_type": {"type": "keyword"},
+                            "uploaded_at": {"type": "date"}
+                        }
                     }
                 }
-            }
+                logger.info("Nori 분석기를 사용한 인덱스 설정을 적용합니다.")
+            else:
+                # 기본 분석기 사용 (Nori 미설치 시)
+                index_settings = {
+                    "settings": {
+                        "analysis": {
+                            "analyzer": {
+                                "korean_analyzer": {
+                                    "type": "custom",
+                                    "tokenizer": "standard",
+                                    "filter": ["lowercase"]
+                                }
+                            }
+                        },
+                        "number_of_shards": 1,
+                        "number_of_replicas": 0
+                    },
+                    "mappings": {
+                        "properties": {
+                            "document_id": {"type": "long"},
+                            "user_id": {"type": "long"},
+                            "content": {
+                                "type": "text",
+                                "analyzer": "korean_analyzer",
+                                "fielddata": True
+                            },
+                            "filename": {"type": "keyword"},
+                            "file_type": {"type": "keyword"},
+                            "uploaded_at": {"type": "date"}
+                        }
+                    }
+                }
+                logger.warning("기본 분석기를 사용한 인덱스 설정을 적용합니다.")
 
             await self.client.indices.create(
                 index=self.index_name,
@@ -244,6 +362,95 @@ class ElasticsearchClient:
 
         except Exception as e:
             logger.error(f"Elasticsearch 문서 삭제 실패: {e}", exc_info=True)
+            return False
+
+    async def recreate_index_with_nori(self) -> bool:
+        """
+        기존 인덱스를 삭제하고 Nori 분석기로 재생성
+
+        Warning: 기존 데이터가 모두 삭제됩니다!
+
+        Returns:
+            성공 여부
+        """
+        if not self.client:
+            await self.connect()
+
+        try:
+            # Nori 플러그인 확인
+            has_nori = await self.check_nori_plugin()
+            if not has_nori:
+                logger.error("Nori 플러그인이 설치되어 있지 않습니다. 인덱스를 재생성할 수 없습니다.")
+                return False
+
+            # 기존 인덱스 존재 확인
+            exists = await self.client.indices.exists(index=self.index_name)
+
+            if exists:
+                # 기존 인덱스 삭제
+                await self.client.indices.delete(index=self.index_name)
+                logger.info(f"기존 인덱스 삭제 완료: {self.index_name}")
+
+            # 새 인덱스 생성 (Nori 분석기 적용)
+            await self.create_index_if_not_exists()
+            logger.info(f"Nori 분석기가 적용된 새 인덱스 생성 완료: {self.index_name}")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"인덱스 재생성 실패: {e}", exc_info=True)
+            return False
+
+    async def reindex_all_documents(self, documents_data: List[Dict[str, Any]]) -> bool:
+        """
+        모든 문서를 재색인
+
+        Args:
+            documents_data: 재색인할 문서 데이터 리스트
+                [{
+                    "document_id": int,
+                    "user_id": int,
+                    "content": str,
+                    "filename": str,
+                    "file_type": str,
+                    "uploaded_at": str
+                }, ...]
+
+        Returns:
+            성공 여부
+        """
+        if not self.client:
+            await self.connect()
+
+        try:
+            success_count = 0
+            failed_count = 0
+
+            for doc in documents_data:
+                try:
+                    success = await self.index_document(
+                        document_id=doc["document_id"],
+                        user_id=doc["user_id"],
+                        content=doc["content"],
+                        filename=doc["filename"],
+                        file_type=doc["file_type"],
+                        uploaded_at=doc.get("uploaded_at")
+                    )
+
+                    if success:
+                        success_count += 1
+                    else:
+                        failed_count += 1
+
+                except Exception as e:
+                    logger.error(f"문서 재색인 실패: document_id={doc.get('document_id')}, error={e}")
+                    failed_count += 1
+
+            logger.info(f"재색인 완료: 성공={success_count}, 실패={failed_count}")
+            return failed_count == 0
+
+        except Exception as e:
+            logger.error(f"재색인 실패: {e}", exc_info=True)
             return False
 
 
