@@ -360,30 +360,346 @@ CREATE TABLE document_tags (
 
 ### AI 기반 자동 태깅 (Keyword Extraction)
 
-문서 업로드 시 AI가 자동으로 키워드를 추출하고 태그를 생성합니다.
+문서 업로드 시 AI가 자동으로 키워드를 추출하고 태그를 생성합니다. 이 시스템은 **하이브리드 추출 전략**을 사용하여 데이터 양에 따라 최적의 방법을 선택합니다.
 
-#### 추출 방법
+#### 하이브리드 추출 전략 (Cold Start → Normal)
 
-1. **KeyBERT (기본 방법)**
-   - BERT 기반 임베딩을 사용한 키워드 추출
-   - 문맥을 고려한 의미 있는 키워드 추출
-   - 추출 개수: 환경 변수 `KEYWORD_EXTRACTION_COUNT` (기본값: 3개)
+**1. Cold Start 모드 (문서 수 < 임계값)**
+- **사용 조건**: Elasticsearch 색인 문서 수 < 10개 (기본 임계값)
+- **추출 방법**: KeyBERT (BERT 기반 임베딩)
+- **장점**:
+  - 문서 간 비교 데이터가 부족해도 단일 문서에서 의미 있는 키워드 추출
+  - 문맥을 고려한 의미론적 키워드 추출
+- **추출 과정**:
+  ```python
+  # KeyBERT 모델 로드 (Lazy Loading)
+  model = KeyBERT()
 
-2. **Elasticsearch TF-IDF (백업 방법)**
-   - KeyBERT 실패 시 자동으로 전환
-   - 전체 사용자 문서를 기반으로 TF-IDF 계산
-   - 문서 간 상대적 중요도 고려
+  # 키워드 추출
+  keywords = model.extract_keywords(
+      text,
+      keyphrase_ngram_range=(1, 2),  # 1~2 단어 구문까지 키워드로 고려
+      stop_words='english',          # 영어 불용어 제거 (is, a, the 등)
+      top_n=3,                        # 상위 3개 키워드 추출
+      use_maxsum=True,                # 다양성 증가 (키워드 중복 방지)
+      nr_candidates=20                # 내부 후보 키워드 20개 생성 후 필터링
+  )
+  # 결과: [("machine learning", 0.85), ("deep learning", 0.78), ...]
+  ```
 
-#### 추출 프로세스
+**2. Normal 모드 (문서 수 >= 임계값)**
+- **사용 조건**: Elasticsearch 색인 문서 수 >= 10개
+- **추출 방법**: Elasticsearch TF-IDF (Term Vectors API)
+- **장점**:
+  - 전체 문서 컬렉션과 비교하여 상대적 중요도 계산
+  - 다른 문서에는 없지만 해당 문서에서 중요한 키워드 추출
+- **추출 과정**:
+  ```python
+  # Term Vectors API로 TF-IDF 계산
+  tv_response = await client.termvectors(
+      index="documents",
+      id=str(document_id),
+      fields=["content"],
+      term_statistics=True,
+      field_statistics=True
+  )
 
+  # TF-IDF 점수 계산
+  for term, term_info in terms.items():
+      tf = term_info["term_freq"]        # 해당 문서에서 단어 빈도
+      df = term_info["doc_freq"]         # 전체 문서에서 단어 빈도
+      idf = log((total_docs + 1) / (df + 1)) + 1
+      tfidf = tf * idf
+
+  # 상위 N개 추출 (점수 기준 정렬)
+  keywords = sorted(scores, reverse=True)[:3]
+  ```
+
+#### 전체 추출 프로세스 (9단계)
+
+```
+[1] 사용자 파일 업로드 (Controller)
+    ↓
+[2] 파일 형식 검증 (Service)
+    - MIME 타입 검증 (PDF, DOCX, PPTX, XLSX, TXT만 허용)
+    ↓
+[3] 고유 경로 생성 (Service)
+    - UUID 기반 파일명 생성: {user_id}/{uuid}.확장자
+    - 예: 123/a1b2c3d4-e5f6-7890-abcd-ef1234567890.pdf
+    ↓
+[4] MinIO 업로드 (MinIO Client)
+    - 버킷: user-documents
+    - 객체 스토리지에 실제 파일 저장
+    ↓
+[5] PostgreSQL 메타데이터 저장 (Repository)
+    - 테이블: documents
+    - 컬럼: document_id, user_id, original_filename, storage_path, file_type, file_size_kb
+    ↓
+[6] 텍스트 추출 (TextExtractor)
+    - PDF → pypdf 라이브러리
+    - DOCX → python-docx 라이브러리
+    - XLSX → openpyxl 라이브러리
+    - PPTX → python-pptx 라이브러리
+    - TXT → UTF-8/CP949 디코딩
+    ↓
+[7] Elasticsearch 색인 (Elasticsearch Client)
+    - 인덱스: documents
+    - 필드: document_id, user_id, content, filename, file_type, uploaded_at
+    - 한국어 분석기 적용 (korean_analyzer)
+    ↓
+[8] 하이브리드 키워드 추출 (Keyword Extraction Service)
+    ├─ 문서 수 확인: await elasticsearch_client.get_document_count()
+    ├─ 문서 < 10: KeyBERT 사용 (Cold Start)
+    └─ 문서 >= 10: Elasticsearch TF-IDF 사용 (Normal)
+    ↓
+[9] 태그 생성 및 문서 연결 (TagService)
+    - tags 테이블: Get-or-Create 패턴 (중복 방지)
+    - document_tags 테이블: Bulk Insert (N+1 방지)
+```
+
+#### 코드 흐름 (파일 → 함수 단위)
+
+**Controller Layer** (`documents/controller.py:34-78`)
 ```python
-1. 문서 업로드 → MinIO 저장
-2. 텍스트 추출 (PDF, DOCX, PPTX 등)
-3. KeyBERT 키워드 추출 시도
-   ├─ 성공 → 키워드 반환
-   └─ 실패 → Elasticsearch TF-IDF 시도
-4. 추출된 키워드 → tags 테이블 생성 (중복 시 재사용)
-5. document_tags 연결 테이블에 매핑
+@router.post("/upload")
+async def upload_document(file: UploadFile, user_id: int, document_service: DocumentService):
+    # 1. Service 호출
+    document, tags, extraction_method = await document_service.upload_document(
+        user_id=user_id,
+        file=file
+    )
+
+    # 2. 응답 생성
+    return DocumentUploadResponse(
+        document_id=document.document_id,
+        tags=[TagSchema(tag_id=tag.tag_id, name=tag.name) for tag in tags],
+        extraction_method=extraction_method  # "keybert" or "elasticsearch"
+    )
+```
+
+**Service Layer** (`documents/service.py:48-158`)
+```python
+async def upload_document(user_id: int, file: UploadFile):
+    # Step 1-3: 검증 및 경로 생성
+    unique_filename = f"{uuid.uuid4()}{file.suffix}"  # UUID 생성
+    storage_path = f"{user_id}/{unique_filename}"
+
+    # Step 4: MinIO 업로드
+    minio_client.upload_file(storage_path, file_data, file_size, content_type)
+
+    # Step 5: PostgreSQL 저장
+    document = await document_repository.create(
+        user_id, original_filename, storage_path, file_type, file_size_kb
+    )
+
+    # Step 6: 텍스트 추출
+    extracted_text = text_extractor.extract_text_from_bytes(
+        file_data, file_type, filename
+    )
+
+    # Step 7: Elasticsearch 색인
+    await elasticsearch_client.index_document(
+        document_id=document.document_id,
+        user_id=user_id,
+        content=extracted_text,
+        filename=filename,
+        file_type=file_type,
+        uploaded_at=document.uploaded_at.isoformat()
+    )
+
+    # Step 8: 하이브리드 키워드 추출
+    keywords, extraction_method = await keyword_extraction_service.extract_keywords(
+        text=extracted_text,
+        document_id=document.document_id
+    )
+
+    # Step 9: 태그 생성 및 연결
+    tags = await tag_service.attach_tags_to_document(
+        document_id=document.document_id,
+        tag_names=keywords
+    )
+
+    return document, tags, extraction_method
+```
+
+**TextExtractor** (`core/text_extractor.py:14-56`)
+```python
+@staticmethod
+def extract_text_from_bytes(file_data: bytes, file_type: str, filename: str):
+    # 파일 타입에 따라 적절한 라이브러리 사용
+    if file_type == "application/pdf":
+        return TextExtractor._extract_from_pdf(file_data)
+    elif file_type == "text/plain":
+        return TextExtractor._extract_from_txt(file_data)
+    elif "wordprocessing" in file_type:  # DOCX
+        return TextExtractor._extract_from_docx(file_data)
+    elif "spreadsheet" in file_type:     # XLSX
+        return TextExtractor._extract_from_excel(file_data)
+    elif "presentation" in file_type:    # PPTX
+        return TextExtractor._extract_from_pptx(file_data)
+
+@staticmethod
+def _extract_from_pdf(file_data: bytes):
+    """PDF에서 텍스트 추출 (pypdf 라이브러리)"""
+    import pypdf
+    pdf_reader = pypdf.PdfReader(BytesIO(file_data))
+    text_parts = [page.extract_text() for page in pdf_reader.pages]
+    return "\n".join(text_parts)
+```
+
+**Elasticsearch Client** (`core/elasticsearch_client.py:83-127`)
+```python
+async def index_document(document_id, user_id, content, filename, file_type, uploaded_at):
+    """Elasticsearch에 문서 색인"""
+    doc_body = {
+        "document_id": document_id,
+        "user_id": user_id,
+        "content": content,              # 추출된 텍스트
+        "filename": filename,
+        "file_type": file_type,
+        "uploaded_at": uploaded_at
+    }
+
+    await self.client.index(
+        index="documents",
+        id=str(document_id),
+        document=doc_body
+    )
+
+async def extract_significant_terms(document_id, size=3):
+    """Elasticsearch TF-IDF 기반 키워드 추출"""
+    tv_response = await self.client.termvectors(
+        index="documents",
+        id=str(document_id),
+        fields=["content"],
+        term_statistics=True,
+        field_statistics=True
+    )
+
+    # TF-IDF 계산
+    terms = tv_response["term_vectors"]["content"]["terms"]
+    term_scores = []
+    for term, term_info in terms.items():
+        tf = term_info["term_freq"]
+        df = term_info["doc_freq"]
+        total_docs = tv_response["term_vectors"]["content"]["field_statistics"]["doc_count"]
+        idf = math.log((total_docs + 1) / (df + 1)) + 1
+        tfidf = tf * idf
+
+        if 2 <= len(term) <= 30:  # 단어 길이 필터
+            term_scores.append((term, tfidf))
+
+    # 상위 N개 반환
+    term_scores.sort(key=lambda x: x[1], reverse=True)
+    return [term for term, score in term_scores[:size]]
+```
+
+**Keyword Extraction Service** (`core/keyword_extraction.py:142-178`)
+```python
+class HybridKeywordExtractionService:
+    """하이브리드 키워드 추출 서비스 (Orchestrator)"""
+
+    async def extract_keywords(text, document_id):
+        # 1. 현재 Elasticsearch 문서 수 확인
+        document_count = await elasticsearch_client.get_document_count()
+
+        # 2. 임계값 기반 전략 선택
+        if document_count < self.threshold:  # 기본값: 10
+            # Cold Start: KeyBERT 사용
+            keywords = await keybert_extractor.extract_keywords(text)
+            method = "keybert"
+        else:
+            # Normal: Elasticsearch TF-IDF 사용
+            keywords = await elasticsearch_extractor.extract_keywords(text, document_id)
+            method = "elasticsearch"
+
+        # 3. 키워드 정규화 (소문자, 중복 제거)
+        keywords = list(set(kw.strip().lower() for kw in keywords))
+
+        return keywords, method
+
+class KeyBERTExtractor(KeywordExtractor):
+    """KeyBERT 기반 키워드 추출기"""
+
+    async def extract_keywords(text, document_id=None):
+        # KeyBERT 모델 로드 (최초 1회)
+        if self.model is None:
+            from keybert import KeyBERT
+            self.model = KeyBERT()
+
+        # 키워드 추출
+        keywords_with_scores = self.model.extract_keywords(
+            text,
+            keyphrase_ngram_range=(1, 2),
+            stop_words='english',
+            top_n=3,
+            use_maxsum=True,
+            nr_candidates=20
+        )
+
+        return [kw[0] for kw in keywords_with_scores]
+
+class ElasticsearchExtractor(KeywordExtractor):
+    """Elasticsearch TF-IDF 기반 키워드 추출기"""
+
+    async def extract_keywords(text, document_id):
+        keywords = await elasticsearch_client.extract_significant_terms(
+            document_id=document_id,
+            size=3
+        )
+        return keywords
+```
+
+**Tag Service** (`tags/service.py:59-87`)
+```python
+async def attach_tags_to_document(document_id, tag_names):
+    """태그 생성 및 문서 연결"""
+    # 1. 태그 조회 또는 생성 (Get-or-Create, N+1 방지)
+    tags = await self.get_or_create_tags(tag_names)
+
+    # 2. 문서-태그 연결 생성 (Bulk Insert)
+    tag_ids = [tag.tag_id for tag in tags]
+    await self.document_tag_repository.bulk_create(document_id, tag_ids)
+
+    return tags
+```
+
+**Tag Repository** (`tags/repository.py:121-147`)
+```python
+async def bulk_get_or_create(names):
+    """여러 태그를 한 번에 조회 또는 생성 (N+1 방지)"""
+    # 1. 기존 태그 조회 (한 번의 쿼리)
+    existing_tags = await find_all_by_names(names)
+    existing_tag_names = {tag.name for tag in existing_tags}
+
+    # 2. 신규 태그 필터링
+    new_tag_names = [name for name in names if name not in existing_tag_names]
+
+    # 3. 신규 태그 생성 (Bulk Insert)
+    new_tags = await bulk_create(new_tag_names) if new_tag_names else []
+
+    # 4. 기존 + 신규 반환
+    return existing_tags + new_tags
+
+async def bulk_create(names):
+    """여러 태그를 한 번에 생성"""
+    tags = [Tag(name=name) for name in names]
+    self.db.add_all(tags)
+    await self.db.commit()
+    return tags
+```
+
+**Document Tag Repository** (`tags/repository.py:182-207`)
+```python
+async def bulk_create(document_id, tag_ids):
+    """문서-태그 연결 생성 (Bulk Insert)"""
+    document_tags = [
+        DocumentTag(document_id=document_id, tag_id=tag_id)
+        for tag_id in tag_ids
+    ]
+    self.db.add_all(document_tags)
+    await self.db.commit()
+    return document_tags
 ```
 
 ### 태그 관리 기능
@@ -438,6 +754,380 @@ Tags 도메인도 SOLID 원칙을 따라 계층이 분리되어 있습니다:
 - **Bulk Operations**: 여러 태그를 한 번에 처리하여 DB 쿼리 최소화
 - **Eager Loading**: `selectinload()`를 사용하여 N+1 문제 방지
 - **트랜잭션**: 태그 생성/연결을 하나의 트랜잭션으로 처리
+
+---
+
+## 🗄️ MinIO (객체 스토리지)
+
+MinIO는 Amazon S3 호환 API를 제공하는 오픈소스 객체 스토리지입니다. Searchive에서는 사용자 업로드 문서를 저장하는 데 사용됩니다.
+
+### MinIO 구조
+
+**버킷 구조:**
+```
+user-documents/              # 버킷 이름
+  ├── 1/                     # user_id=1
+  │   ├── a1b2c3d4-uuid.pdf
+  │   ├── e5f6g7h8-uuid.docx
+  │   └── i9j0k1l2-uuid.xlsx
+  ├── 2/                     # user_id=2
+  │   ├── m3n4o5p6-uuid.pdf
+  │   └── q7r8s9t0-uuid.txt
+  └── 3/                     # user_id=3
+      └── u1v2w3x4-uuid.pptx
+```
+
+### MinIO Client 구현 (`core/minio_client.py`)
+
+**주요 기능:**
+
+#### 1. 파일 업로드
+```python
+def upload_file(file_path: str, file_data: BytesIO, file_size: int, content_type: str):
+    """
+    MinIO에 파일 업로드
+
+    Args:
+        file_path: 저장 경로 (예: "1/uuid.pdf")
+        file_data: 파일 바이트 스트림
+        file_size: 파일 크기 (bytes)
+        content_type: MIME 타입 (예: "application/pdf")
+    """
+    client.put_object(
+        bucket_name=BUCKET_NAME,
+        object_name=file_path,
+        data=file_data,
+        length=file_size,
+        content_type=content_type
+    )
+```
+
+#### 2. 파일 다운로드
+```python
+def download_file(file_path: str) -> bytes:
+    """
+    MinIO에서 파일 다운로드
+
+    Returns:
+        파일 바이트 데이터
+    """
+    response = client.get_object(
+        bucket_name=BUCKET_NAME,
+        object_name=file_path
+    )
+    return response.read()
+```
+
+#### 3. 파일 삭제
+```python
+def delete_file(file_path: str):
+    """
+    MinIO에서 파일 삭제
+    """
+    client.remove_object(
+        bucket_name=BUCKET_NAME,
+        object_name=file_path
+    )
+```
+
+### MinIO 장점
+
+1. **확장성**: 수평 확장으로 대용량 파일 저장 가능
+2. **비용 효율**: 오픈소스로 무료 사용 가능
+3. **S3 호환**: AWS S3 API와 호환되어 마이그레이션 용이
+4. **보안**: 접근 제어 및 암호화 지원
+5. **성능**: 높은 처리량과 낮은 지연시간
+
+### 환경 변수 설정
+
+```bash
+MINIO_ENDPOINT=localhost:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET_NAME=user-documents
+MINIO_SECURE=False  # HTTPS 사용 여부
+```
+
+---
+
+## 🔍 Elasticsearch (검색 엔진)
+
+Elasticsearch는 분산형 검색 및 분석 엔진입니다. Searchive에서는 문서 전문 검색과 TF-IDF 기반 키워드 추출에 사용됩니다.
+
+### Elasticsearch 인덱스 구조
+
+**인덱스 이름:** `documents`
+
+**매핑 (Mapping):**
+```json
+{
+  "settings": {
+    "analysis": {
+      "analyzer": {
+        "korean_analyzer": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": ["lowercase"]
+        }
+      }
+    },
+    "number_of_shards": 1,
+    "number_of_replicas": 0
+  },
+  "mappings": {
+    "properties": {
+      "document_id": {"type": "long"},
+      "user_id": {"type": "long"},
+      "content": {
+        "type": "text",
+        "analyzer": "korean_analyzer",
+        "fielddata": true  # TF-IDF 계산을 위해 필요
+      },
+      "filename": {"type": "keyword"},
+      "file_type": {"type": "keyword"},
+      "uploaded_at": {"type": "date"}
+    }
+  }
+}
+```
+
+### Elasticsearch Client 구현 (`core/elasticsearch_client.py`)
+
+**주요 기능:**
+
+#### 1. 문서 색인 (Indexing)
+```python
+async def index_document(document_id, user_id, content, filename, file_type, uploaded_at):
+    """
+    Elasticsearch에 문서 색인
+
+    - 전문 검색을 위한 역색인 생성
+    - TF-IDF 계산을 위한 통계 수집
+    """
+    doc_body = {
+        "document_id": document_id,
+        "user_id": user_id,
+        "content": content,              # 추출된 텍스트
+        "filename": filename,
+        "file_type": file_type,
+        "uploaded_at": uploaded_at
+    }
+
+    await client.index(
+        index="documents",
+        id=str(document_id),
+        document=doc_body
+    )
+```
+
+#### 2. TF-IDF 기반 키워드 추출
+```python
+async def extract_significant_terms(document_id, size=3):
+    """
+    Term Vectors API를 사용한 TF-IDF 키워드 추출
+
+    TF-IDF (Term Frequency - Inverse Document Frequency):
+    - TF: 해당 문서에서 단어가 나타난 빈도
+    - IDF: 전체 문서에서 단어의 희소성 (흔하지 않을수록 높음)
+    - TF-IDF = TF × IDF
+
+    높은 TF-IDF 점수를 가진 단어 = 해당 문서를 잘 대표하는 키워드
+    """
+    # 1. Term Vectors API 호출
+    tv_response = await client.termvectors(
+        index="documents",
+        id=str(document_id),
+        fields=["content"],
+        term_statistics=True,      # DF (전체 문서에서 단어 빈도)
+        field_statistics=True      # 전체 문서 수
+    )
+
+    # 2. TF-IDF 점수 계산
+    terms = tv_response["term_vectors"]["content"]["terms"]
+    term_scores = []
+
+    for term, term_info in terms.items():
+        # TF (Term Frequency)
+        tf = term_info["term_freq"]
+
+        # DF (Document Frequency)
+        df = term_info["doc_freq"]
+
+        # 전체 문서 수
+        total_docs = tv_response["term_vectors"]["content"]["field_statistics"]["doc_count"]
+
+        # IDF (Inverse Document Frequency) 계산
+        import math
+        idf = math.log((total_docs + 1) / (df + 1)) + 1
+
+        # TF-IDF 점수
+        tfidf = tf * idf
+
+        # 단어 길이 필터 (너무 짧거나 긴 단어 제외)
+        if 2 <= len(term) <= 30:
+            term_scores.append((term, tfidf))
+
+    # 3. 상위 N개 키워드 반환
+    term_scores.sort(key=lambda x: x[1], reverse=True)
+    keywords = [term for term, score in term_scores[:size]]
+
+    return keywords
+```
+
+#### 3. 전문 검색 (Full-Text Search)
+```python
+async def search_documents(user_id, query, size=10):
+    """
+    사용자 문서 전문 검색
+
+    - 한국어 분석기를 사용한 토큰화
+    - BM25 랭킹 알고리즘 적용
+    """
+    search_body = {
+        "query": {
+            "bool": {
+                "must": [
+                    {"match": {"content": query}},  # 전문 검색
+                    {"term": {"user_id": user_id}}  # 사용자 필터
+                ]
+            }
+        },
+        "size": size
+    }
+
+    response = await client.search(
+        index="documents",
+        body=search_body
+    )
+
+    return response["hits"]["hits"]
+```
+
+### Elasticsearch 장점
+
+1. **확장성**: 분산 아키텍처로 대용량 데이터 처리 가능
+2. **실시간 검색**: Near Real-Time 검색 지원
+3. **다양한 분석**: TF-IDF, BM25, 형태소 분석 등 지원
+4. **RESTful API**: 간단한 HTTP 요청으로 사용 가능
+5. **풍부한 쿼리 DSL**: 복잡한 검색 조건 표현 가능
+
+### 환경 변수 설정
+
+```bash
+ELASTICSEARCH_URL=http://localhost:9200
+ELASTICSEARCH_USER=elastic
+ELASTICSEARCH_PASSWORD=changeme
+KEYWORD_EXTRACTION_THRESHOLD=10  # 하이브리드 전환 임계값
+```
+
+---
+
+## 🤖 KeyBERT (AI 키워드 추출)
+
+KeyBERT는 BERT 임베딩을 사용하여 문서에서 의미 있는 키워드를 추출하는 Python 라이브러리입니다.
+
+### KeyBERT 동작 원리
+
+**1. BERT 임베딩 생성**
+```
+문서 텍스트 → BERT 모델 → 문서 임베딩 (768차원 벡터)
+각 단어/구문 → BERT 모델 → 단어 임베딩 (768차원 벡터)
+```
+
+**2. 코사인 유사도 계산**
+```
+similarity(문서, 키워드) = cosine(문서 임베딩, 키워드 임베딩)
+```
+
+**3. 상위 N개 키워드 선택**
+```
+유사도가 높은 키워드 = 문서와 의미적으로 관련성이 높은 키워드
+```
+
+### KeyBERT Extractor 구현 (`core/keyword_extraction.py`)
+
+```python
+class KeyBERTExtractor(KeywordExtractor):
+    """KeyBERT 기반 키워드 추출기"""
+
+    def __init__(self):
+        self.model = None
+
+    def _load_model(self):
+        """
+        KeyBERT 모델 로드 (Lazy Loading)
+
+        - 최초 1회만 로드 (메모리 절약)
+        - sentence-transformers 기반
+        """
+        if self.model is None:
+            from keybert import KeyBERT
+            self.model = KeyBERT()
+            logger.info("KeyBERT 모델 로드 성공")
+
+    async def extract_keywords(self, text, document_id=None):
+        """
+        KeyBERT를 사용한 키워드 추출
+
+        Args:
+            text: 대상 텍스트
+            document_id: 사용하지 않음
+
+        Returns:
+            추출된 키워드 리스트
+        """
+        self._load_model()
+
+        # KeyBERT 키워드 추출
+        keywords_with_scores = self.model.extract_keywords(
+            text,
+            keyphrase_ngram_range=(1, 2),  # 1~2 단어 구문까지 키워드로 고려
+            stop_words='english',          # 영어 불용어 제거 (is, a, the 등)
+            top_n=3,                        # 상위 3개 키워드 추출
+            use_maxsum=True,                # 다양성 증가 (키워드 중복 방지)
+            nr_candidates=20                # 내부 후보 키워드 20개 생성 후 필터링
+        )
+
+        # (키워드, 점수) 튜플에서 키워드만 추출
+        keywords = [kw[0] for kw in keywords_with_scores]
+
+        return keywords
+```
+
+### KeyBERT 파라미터 설명
+
+| 파라미터 | 설명 | 예시 |
+|---------|------|------|
+| `keyphrase_ngram_range` | 키워드 단어 수 범위 | `(1, 2)` → "machine", "machine learning" |
+| `stop_words` | 불용어 리스트 | `'english'` → "is", "a", "the" 제거 |
+| `top_n` | 추출할 키워드 개수 | `3` → 상위 3개만 추출 |
+| `use_maxsum` | 다양성 증가 | `True` → 중복된 의미 키워드 제거 |
+| `nr_candidates` | 후보 키워드 수 | `20` → 20개 후보 중 best 선택 |
+
+### KeyBERT 장점
+
+1. **의미론적 이해**: BERT 임베딩으로 문맥 고려
+2. **Cold Start 문제 해결**: 단일 문서만으로 키워드 추출 가능
+3. **다국어 지원**: 한국어, 영어 등 다양한 언어 지원
+4. **사전 학습 모델**: 추가 학습 없이 바로 사용 가능
+5. **커스터마이징**: 다양한 파라미터로 조정 가능
+
+### 환경 변수 설정
+
+```bash
+KEYWORD_EXTRACTION_COUNT=3              # 추출할 키워드 개수
+KEYWORD_EXTRACTION_THRESHOLD=10         # 하이브리드 전환 임계값
+```
+
+### KeyBERT vs Elasticsearch 비교
+
+| 항목 | KeyBERT | Elasticsearch TF-IDF |
+|-----|---------|---------------------|
+| **사용 시점** | Cold Start (문서 < 10개) | Normal (문서 >= 10개) |
+| **원리** | BERT 임베딩 + 코사인 유사도 | TF-IDF 통계 |
+| **장점** | 의미론적 정확도 높음 | 상대적 중요도 반영 |
+| **단점** | 계산 비용 높음 | 문서 간 비교 데이터 필요 |
+| **적합한 상황** | 초기 데이터 부족 시 | 충분한 문서 축적 후 |
 
 ---
 

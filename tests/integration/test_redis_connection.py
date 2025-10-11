@@ -1,6 +1,5 @@
 import pytest
 import time
-from redis.exceptions import ConnectionError, ResponseError
 
 from src.core.config import settings
 

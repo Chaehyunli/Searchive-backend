@@ -9,7 +9,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class KeywordExtractor(ABC):
+class KeywordExtractor(ABC): # Abstract Base Class 추상 클래스 생성
     """키워드 추출 인터페이스 (Strategy Pattern)"""
 
     @abstractmethod
@@ -68,11 +68,11 @@ class KeyBERTExtractor(KeywordExtractor):
             keyword_count = settings.KEYWORD_EXTRACTION_COUNT
             keywords_with_scores = self.model.extract_keywords(
                 text,
-                keyphrase_ngram_range=(1, 2),  # 1~2 단어 구문
-                stop_words='english',  # 영어 불용어 제거
+                keyphrase_ngram_range=(1, 2),  # 1~2 단어 구문까지 키워드로 고려
+                stop_words='english',  # 영어 불용어 제거(is,a, the 같은 불용어를 키워드에서 제거)
                 top_n=keyword_count,
-                use_maxsum=True,  # 다양성 증가
-                nr_candidates=20  # 후보 키워드 수
+                use_maxsum=True,  # 다양성 증가(키워드 중복 방지)
+                nr_candidates=20  # 후보 키워드 수(내부적으로 키워드 20개를 뽑아놓고, 그 중에 성능 좋을 것들을 추출)
             )
 
             # (키워드, 점수) 튜플에서 키워드만 추출
@@ -89,7 +89,7 @@ class KeyBERTExtractor(KeywordExtractor):
         return "keybert"
 
 
-class ElasticsearchExtractor(KeywordExtractor):
+class ElasticsearchExtractor(KeywordExtractor): # 다른 문서들과 비교해서 키워드 추출
     """Elasticsearch Significant Text 기반 키워드 추출기 (Normal용)"""
 
     async def extract_keywords(self, text: str, document_id: int = None) -> List[str]:
