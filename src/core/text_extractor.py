@@ -55,7 +55,7 @@ class TextExtractor:
             logger.error(f"텍스트 추출 실패: {e}", exc_info=True)
             return None
 
-    @staticmethod
+    @staticmethod # staticmethod 함수는 self의 영향을 받지 않음
     def _extract_from_pdf(file_data: bytes) -> Optional[str]:
         """PDF 파일에서 텍스트 추출"""
         try:

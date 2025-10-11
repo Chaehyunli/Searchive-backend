@@ -73,7 +73,7 @@ class DocumentService:
 
         # 2. 고유 경로 생성 (user_id/uuid.확장자)
         file_extension = Path(file.filename).suffix
-        unique_filename = f"{uuid.uuid4()}{file_extension}"
+        unique_filename = f"{uuid.uuid4()}{file_extension}" # uuid.uudi4()는 무작위 기반 중복되지 않는 고유한 UUID를 생성해서 반환 
         storage_path = f"{user_id}/{unique_filename}"
 
         # 3. 파일 크기 계산 (KB)
@@ -121,7 +121,8 @@ class DocumentService:
                 user_id=user_id,
                 content=extracted_text,
                 filename=file.filename,
-                file_type=file.content_type
+                file_type=file.content_type,
+                uploaded_at=document.uploaded_at.isoformat()
             )
             logger.info(f"Elasticsearch 색인 완료: document_id={document.document_id}")
 

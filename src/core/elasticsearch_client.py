@@ -86,7 +86,8 @@ class ElasticsearchClient:
         user_id: int,
         content: str,
         filename: str,
-        file_type: str
+        file_type: str,
+        uploaded_at: Optional[str] = None
     ) -> bool:
         """
         문서를 Elasticsearch에 색인
@@ -97,6 +98,7 @@ class ElasticsearchClient:
             content: 문서 텍스트 내용
             filename: 파일명
             file_type: 파일 타입
+            uploaded_at: 업로드 일시 (ISO format string)
 
         Returns:
             색인 성공 여부
@@ -111,7 +113,7 @@ class ElasticsearchClient:
                 "content": content,
                 "filename": filename,
                 "file_type": file_type,
-                "uploaded_at": None  # 필요시 추가
+                "uploaded_at": uploaded_at
             }
 
             await self.client.index(
