@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+"""Redis 연결 및 기본 동작 테스트"""
 import pytest
 import time
 
@@ -5,49 +7,49 @@ from src.core.config import settings
 
 
 class TestRedisConnection:
-    """Test Redis connectivity and basic operations."""
+    """Redis 연결 및 기본 동작 테스트"""
 
     def test_redis_connection(self, redis_client):
-        """Test that we can connect to Redis."""
+        """Redis 연결 테스트"""
         assert redis_client.ping() is True
 
     def test_redis_config(self):
-        """Test that Redis configuration is properly loaded."""
+        """Redis 설정이 올바르게 로드되었는지 테스트"""
         assert settings.REDIS_HOST is not None
         assert settings.REDIS_PORT is not None
         assert settings.REDIS_URL is not None
 
     def test_redis_url_format(self):
-        """Test that REDIS_URL is properly formatted."""
+        """REDIS_URL 형식이 올바른지 테스트"""
         expected_prefix = f"redis://"
         assert settings.REDIS_URL.startswith(expected_prefix)
         assert str(settings.REDIS_PORT) in settings.REDIS_URL
 
     def test_redis_info(self, redis_client):
-        """Test that we can get Redis server info."""
+        """Redis 서버 정보 조회 테스트"""
         info = redis_client.info()
         assert 'redis_version' in info
         assert 'os' in info
 
     def test_redis_database_selection(self, redis_client):
-        """Test that we're using the correct test database."""
-        # The fixture uses db=1 for testing
+        """올바른 테스트 데이터베이스를 사용하는지 테스트"""
+        # 픽스처는 테스트를 위해 db=1을 사용
         redis_client.set('test_db', '1')
         result = redis_client.get('test_db')
         assert result == '1'
 
 
 class TestRedisOperations:
-    """Test basic Redis CRUD operations."""
+    """Redis 기본 CRUD 연산 테스트"""
 
     def test_set_and_get(self, clean_redis):
-        """Test basic set and get operations."""
+        """기본 SET과 GET 연산 테스트"""
         clean_redis.set('test_key', 'test_value')
         result = clean_redis.get('test_key')
         assert result == 'test_value'
 
     def test_delete_operation(self, clean_redis):
-        """Test delete operations."""
+        """DELETE 연산 테스트"""
         clean_redis.set('to_delete', 'value')
         assert clean_redis.exists('to_delete') == 1
 
@@ -55,7 +57,7 @@ class TestRedisOperations:
         assert clean_redis.exists('to_delete') == 0
 
     def test_expiration(self, clean_redis):
-        """Test key expiration."""
+        """키 만료 테스트"""
         clean_redis.setex('expiring_key', 1, 'value')
         assert clean_redis.get('expiring_key') == 'value'
 
@@ -63,7 +65,7 @@ class TestRedisOperations:
         assert clean_redis.get('expiring_key') is None
 
     def test_increment_operation(self, clean_redis):
-        """Test increment operations."""
+        """증가(INCREMENT) 연산 테스트"""
         clean_redis.set('counter', 0)
         clean_redis.incr('counter')
         clean_redis.incr('counter')
@@ -72,7 +74,7 @@ class TestRedisOperations:
         assert int(result) == 2
 
     def test_list_operations(self, clean_redis):
-        """Test list push and pop operations."""
+        """리스트 PUSH와 POP 연산 테스트"""
         clean_redis.lpush('test_list', 'item1', 'item2', 'item3')
 
         assert clean_redis.llen('test_list') == 3
@@ -80,21 +82,20 @@ class TestRedisOperations:
         assert clean_redis.llen('test_list') == 2
 
     def test_hash_operations(self, clean_redis):
-        """Test hash operations."""
-        clean_redis.hset('user:1', mapping={
-            'name': 'John Doe',
-            'email': 'john@example.com',
-            'age': '30'
-        })
+        """해시(Hash) 자료구조 연산 테스트 (실제 세션 구조와 무관한 기능 테스트)"""
+        # 구버전 Redis 호환성을 위해 개별 hset 사용
+        clean_redis.hset('test_hash:1', 'name', 'John Doe')
+        clean_redis.hset('test_hash:1', 'email', 'john@example.com')
+        clean_redis.hset('test_hash:1', 'age', '30')
 
-        assert clean_redis.hget('user:1', 'name') == 'John Doe'
-        assert clean_redis.hget('user:1', 'email') == 'john@example.com'
+        assert clean_redis.hget('test_hash:1', 'name') == 'John Doe'
+        assert clean_redis.hget('test_hash:1', 'email') == 'john@example.com'
 
-        all_data = clean_redis.hgetall('user:1')
+        all_data = clean_redis.hgetall('test_hash:1')
         assert len(all_data) == 3
 
     def test_set_operations(self, clean_redis):
-        """Test set operations."""
+        """집합(Set) 연산 테스트"""
         clean_redis.sadd('tags', 'python', 'redis', 'testing')
 
         assert clean_redis.scard('tags') == 3
@@ -102,7 +103,7 @@ class TestRedisOperations:
         assert clean_redis.sismember('tags', 'java') == 0
 
     def test_multiple_keys(self, clean_redis):
-        """Test operations with multiple keys."""
+        """다중 키 연산 테스트"""
         clean_redis.mset({
             'key1': 'value1',
             'key2': 'value2',
@@ -114,35 +115,35 @@ class TestRedisOperations:
 
 
 class TestRedisCaching:
-    """Test Redis caching patterns."""
+    """Redis 캐싱 패턴 테스트"""
 
     def test_cache_hit(self, clean_redis):
-        """Test cache hit scenario."""
+        """캐시 히트 시나리오 테스트"""
         cache_key = 'cache:user:123'
         cache_value = '{"id": 123, "name": "John"}'
 
-        # Simulate cache miss
+        # 캐시 미스 시뮬레이션
         assert clean_redis.get(cache_key) is None
 
-        # Set cache
+        # 캐시 설정
         clean_redis.setex(cache_key, 300, cache_value)
 
-        # Simulate cache hit
+        # 캐시 히트 시뮬레이션
         result = clean_redis.get(cache_key)
         assert result == cache_value
 
     def test_cache_invalidation(self, clean_redis):
-        """Test cache invalidation."""
+        """캐시 무효화 테스트"""
         cache_key = 'cache:product:456'
         clean_redis.set(cache_key, 'old_data')
 
-        # Invalidate cache
+        # 캐시 무효화
         clean_redis.delete(cache_key)
 
         assert clean_redis.get(cache_key) is None
 
     def test_cache_ttl(self, clean_redis):
-        """Test cache time-to-live."""
+        """캐시 TTL(Time-To-Live) 테스트"""
         cache_key = 'cache:session:789'
         clean_redis.setex(cache_key, 2, 'session_data')
 
@@ -150,7 +151,7 @@ class TestRedisCaching:
         assert 0 < ttl <= 2
 
     def test_pattern_matching(self, clean_redis):
-        """Test key pattern matching."""
+        """키 패턴 매칭 테스트"""
         clean_redis.set('user:1', 'data1')
         clean_redis.set('user:2', 'data2')
         clean_redis.set('product:1', 'data3')
@@ -160,10 +161,10 @@ class TestRedisCaching:
 
 
 class TestRedisPerformance:
-    """Test Redis performance characteristics."""
+    """Redis 성능 특성 테스트"""
 
     def test_bulk_operations(self, clean_redis):
-        """Test bulk write performance."""
+        """대량 쓰기 성능 테스트"""
         pipe = clean_redis.pipeline()
 
         for i in range(100):
@@ -171,17 +172,17 @@ class TestRedisPerformance:
 
         pipe.execute()
 
-        # Verify
+        # 검증
         assert clean_redis.exists('bulk:key:0') == 1
         assert clean_redis.exists('bulk:key:99') == 1
 
     def test_pipeline_performance(self, clean_redis):
-        """Test pipeline operations."""
+        """파이프라인 연산 테스트"""
         with clean_redis.pipeline() as pipe:
             for i in range(50):
                 pipe.set(f'pipe:key:{i}', i)
                 pipe.get(f'pipe:key:{i}')
             results = pipe.execute()
 
-        # Every other result should be the get operation
+        # GET 연산 결과가 포함되어야 함
         assert len(results) == 100
