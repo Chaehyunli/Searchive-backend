@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from src.domains.documents.models import Document
+from src.domains.tags.models import DocumentTag
 
 
 class DocumentRepository:
@@ -84,7 +85,7 @@ class DocumentRepository:
         """
         result = await self.db.execute(
             select(Document)
-            .options(selectinload(Document.document_tags).selectinload(lambda dt: dt.tag))
+            .options(selectinload(Document.document_tags).selectinload(DocumentTag.tag))
             .where(
                 Document.document_id == document_id,
                 Document.user_id == user_id
@@ -104,7 +105,7 @@ class DocumentRepository:
         """
         result = await self.db.execute(
             select(Document)
-            .options(selectinload(Document.document_tags).selectinload(lambda dt: dt.tag))
+            .options(selectinload(Document.document_tags).selectinload(DocumentTag.tag))
             .where(Document.user_id == user_id)
             .order_by(Document.uploaded_at.desc())
         )
