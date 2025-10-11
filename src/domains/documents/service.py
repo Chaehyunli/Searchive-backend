@@ -26,7 +26,10 @@ ALLOWED_MIME_TYPES = {
     "application/msword",  # .doc
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
     "application/vnd.ms-powerpoint",  # .ppt
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation"  # .pptx
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
+    "application/x-hwp",  # .hwp (한글)
+    "application/haansofthwp",  # .hwp (한글, 일부 브라우저)
+    "application/vnd.hancom.hwp"  # .hwp (한글, 표준 MIME 타입)
 }
 
 
